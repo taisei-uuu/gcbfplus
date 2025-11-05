@@ -24,20 +24,30 @@ def train(args):
         os.environ["WANDB_MODE"] = "disabled"
         os.environ["JAX_DISABLE_JIT"] = "True"
 
+    # formation_offsetsのパース
+    formation_offsets = None
+    if args.formation_offsets:
+        import json
+        formation_offsets = json.loads(args.formation_offsets)
+
     # create environments
     env = make_env(
         env_id=args.env,
         num_agents=args.num_agents,
         num_obs=args.obs,
         n_rays=args.n_rays,
-        area_size=args.area_size
+        area_size=args.area_size,
+        formation_mode=args.formation_mode,  # 追加
+        formation_offsets=formation_offsets  # 追加
     )
     env_test = make_env(
         env_id=args.env,
         num_agents=args.num_agents,
         num_obs=args.obs,
         n_rays=args.n_rays,
-        area_size=args.area_size
+        area_size=args.area_size,
+        formation_mode=args.formation_mode,  # 追加
+        formation_offsets=formation_offsets  # 追加
     )
 
     # create low level controller
@@ -146,6 +156,20 @@ def main():
     parser.add_argument("--eval-interval", type=int, default=1)
     parser.add_argument("--eval-epi", type=int, default=1)
     parser.add_argument("--save-interval", type=int, default=10)
+
+    # フォーメーション関連の引数追加
+    parser.add_argument(
+        "--formation-mode",
+        action="store_true",
+        default=False,
+        help="Enable formation mode (leader-follower formation)"
+    )
+    parser.add_argument(
+        "--formation-offsets",
+        type=str,
+        default=None,
+        help="Formation offsets as JSON string, e.g., '[[0.3,0.0],[-0.3,0.0]]'"
+    )
 
     args = parser.parse_args()
     train(args)

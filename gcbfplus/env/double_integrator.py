@@ -39,8 +39,8 @@ class DoubleIntegrator(MultiAgentEnv):
         "obs_len_range": [0.1, 0.5],
         "n_obs": 8,
         "m": 0.1,  # mass
-        # "formation_mode": False, #フォーメーションモード
-        # "formation_offsets": None, #フォーメーションオフセット
+        "formation_mode": False, #フォーメーションモード
+        "formation_offsets": None, #フォーメーションオフセット
     }
 
     def __init__(
@@ -109,15 +109,15 @@ class DoubleIntegrator(MultiAgentEnv):
         states = jnp.concatenate([states, jnp.zeros((self.num_agents, 2))], axis=1)
         goals = jnp.concatenate([goals, jnp.zeros((self.num_agents, 2))], axis=1)
 
-        # #フォーメーションモードの場合
-        # if self._params["formation_mode",False]:
-        #     formation_offsets = self._params["formation_offsets"]
-        #     if formation_offsets is not None:
-        #         leader_pos = states[0, :2]  # リーダーの位置 [x, y]
-        #         # フォロワーのゴールを設定
-        #         for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
-        #             offset = jnp.array(formation_offsets[i-1])
-        #             goals = goals.at[i, :2].set(leader_pos + offset)
+        #フォーメーションモードの場合
+        if self._params["formation_mode",False]:
+            formation_offsets = self._params["formation_offsets"]
+            if formation_offsets is not None:
+                leader_pos = states[0, :2]  # リーダーの位置 [x, y]
+                # フォロワーのゴールを設定
+                for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
+                    offset = jnp.array(formation_offsets[i-1])
+                    goals = goals.at[i, :2].set(leader_pos + offset)
 
         env_states = self.EnvState(states, goals, obstacles)
 
@@ -169,6 +169,16 @@ class DoubleIntegrator(MultiAgentEnv):
         assert agent_states.shape == (self.num_agents, self.state_dim)
 
         next_agent_states = self.agent_step_euler(agent_states, action)
+
+        # フォーメーションモードの場合、フォロワーのゴールを更新
+        if self._params.get("formation_mode", False):
+            formation_offsets = self._params["formation_offsets"]
+            if formation_offsets is not None:
+                leader_pos = next_agent_states[0, :2]  # リーダーの新しい位置
+                # フォロワーのゴールを更新
+                for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
+                    offset = jnp.array(formation_offsets[i-1])
+                    goal_states = goal_states.at[i, :2].set(leader_pos + offset)
 
         # the episode ends when reaching max_episode_steps
         done = jnp.array(False)
@@ -360,6 +370,16 @@ class DoubleIntegrator(MultiAgentEnv):
         assert agent_states.shape == (self.num_agents, self.state_dim)
 
         next_agent_states = self.agent_step_euler(agent_states, action)
+
+        # フォーメーションモードの場合、フォロワーのゴールを更新
+        if self._params.get("formation_mode", False):
+            formation_offsets = self._params["formation_offsets"]
+            if formation_offsets is not None:
+                leader_pos = next_agent_states[0, :2]
+                for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
+                    offset = jnp.array(formation_offsets[i-1])
+                    goal_states = goal_states.at[i, :2].set(leader_pos + offset)
+                    
         next_states = jnp.concatenate([next_agent_states, goal_states, obs_states], axis=0)
 
         next_graph = self.add_edge_feats(graph, next_states)

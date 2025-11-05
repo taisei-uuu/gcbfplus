@@ -42,6 +42,13 @@ def test(args):
 
     # create environments
     num_agents = config.num_agents if args.num_agents is None else args.num_agents
+
+    # formation_offsetsのパース
+    formation_offsets = None
+    if args.formation_offsets:
+        import json
+        formation_offsets = json.loads(args.formation_offsets)
+    
     env = make_env(
         env_id=config.env if args.env is None else args.env,
         num_agents=num_agents,
@@ -49,6 +56,8 @@ def test(args):
         area_size=args.area_size,
         max_step=args.max_step,
         max_travel=args.max_travel,
+        formation_mode=args.formation_mode,  # 追加
+        formation_offsets=formation_offsets  # 追加
     )
 
     if not args.u_ref:
@@ -264,6 +273,20 @@ def main():
     parser.add_argument("--nojit-rollout", action="store_true", default=False)
     parser.add_argument("--log", action="store_true", default=False)
     parser.add_argument("--dpi", type=int, default=100)
+
+    # フォーメーション関連の引数追加
+    parser.add_argument(
+        "--formation-mode",
+        action="store_true",
+        default=False,
+        help="Enable formation mode (leader-follower formation)"
+    )
+    parser.add_argument(
+        "--formation-offsets",
+        type=str,
+        default=None,
+        help="Formation offsets as JSON string, e.g., '[[0.3,0.0],[-0.3,0.0]]'"
+    )
 
     args = parser.parse_args()
     test(args)
