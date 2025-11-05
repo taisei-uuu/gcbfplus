@@ -1,3 +1,6 @@
+import compat_jax_xla_shim
+compat_jax_xla_shim.apply()
+
 import argparse
 import datetime
 import os
