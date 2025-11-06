@@ -110,7 +110,7 @@ class DoubleIntegrator(MultiAgentEnv):
         goals = jnp.concatenate([goals, jnp.zeros((self.num_agents, 2))], axis=1)
 
         #フォーメーションモードの場合
-        if self._params["formation_mode",False]:
+        if self._params.get("formation_mode", False):
             formation_offsets = self._params["formation_offsets"]
             if formation_offsets is not None:
                 leader_pos = states[0, :2]  # リーダーの位置 [x, y]
