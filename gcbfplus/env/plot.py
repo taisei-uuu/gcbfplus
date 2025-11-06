@@ -349,6 +349,9 @@ def render_video(
         if dim == 2:
             for ii in range(n_agent):
                 agent_circs[ii].set_center(tuple(n_pos_t[ii]))
+            # ゴールの位置を更新（追加）
+            for ii in range(n_agent, n_agent * 2):
+                agent_circs[ii].set_center(tuple(n_pos_t[ii]))
         else:
             agent_col.set_offsets(n_pos_t[:n_agent * 2, :2])
             agent_col.set_3d_properties(n_pos_t[:n_agent * 2, 2], zdir='z')
