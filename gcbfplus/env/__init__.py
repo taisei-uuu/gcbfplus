@@ -32,6 +32,7 @@ def make_env(
         n_rays: Optional[int] = None,
         formation_mode: bool = False,  # 追加
         formation_offsets: Optional[list] = None,  # 追加
+        formation_flexible_assignment: bool = False,  # 追加
 ) -> MultiAgentEnv:
     assert env_id in ENV.keys(), f'Environment {env_id} not implemented.'
     params = ENV[env_id].PARAMS.copy()
@@ -50,9 +51,11 @@ def make_env(
             formation_offsets = [[0.3, 0.0], [-0.3, 0.0]]
         # JAX配列に変換して保存
         params["formation_offsets"] = jnp.array(formation_offsets)
+        params["formation_flexible_assignment"] = formation_flexible_assignment
     else:
         params["formation_mode"] = False
         params["formation_offsets"] = None
+        params["formation_flexible_assignment"] = False
     return ENV[env_id](
         num_agents=num_agents,
         area_size=area_size,

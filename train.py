@@ -41,7 +41,8 @@ def train(args):
         n_rays=args.n_rays,
         area_size=args.area_size,
         formation_mode=args.formation_mode,  # 追加
-        formation_offsets=formation_offsets  # 追加
+        formation_offsets=formation_offsets,  # 追加
+        formation_flexible_assignment=args.formation_flexible_assignment  # 追加
     )
     env_test = make_env(
         env_id=args.env,
@@ -50,7 +51,8 @@ def train(args):
         n_rays=args.n_rays,
         area_size=args.area_size,
         formation_mode=args.formation_mode,  # 追加
-        formation_offsets=formation_offsets  # 追加
+        formation_offsets=formation_offsets,  # 追加
+        formation_flexible_assignment=args.formation_flexible_assignment  # 追加
     )
 
     # create low level controller
@@ -172,6 +174,12 @@ def main():
         type=str,
         default=None,
         help="Formation offsets as JSON string, e.g., '[[0.3,0.0],[-0.3,0.0]]'"
+    )
+    parser.add_argument(
+    "--formation-flexible-assignment",
+    action="store_true",
+    default=False,
+    help="Enable flexible formation assignment (P1 feature)"
     )
 
     args = parser.parse_args()
