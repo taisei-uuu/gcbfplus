@@ -4,6 +4,13 @@
 
 フォーメーション飛行において観察された3つの問題点と、それらを統合的に解決するための実装計画をまとめます。
 
+**重要**: 本改善案は以下の条件でのみ適用されます：
+- **環境**: `DoubleIntegrator`環境のみ
+- **アルゴリズム**: `GCBFPlus`（gcbf+）アルゴリズムのみ
+- **適用条件**: `formation_mode=True`が有効な場合のみ
+
+既存のformationモードが起動していない場合、すべての変更は適用されず、既存の動作が維持されます。
+
 ## 問題点と改善案
 
 ### P1: フォロワー間の交差によるデッドロック
@@ -47,31 +54,50 @@ PARAMS = {
     "formation_offsets": None,
     "formation_flexible_assignment": False,  # 新規追加: 柔軟な割り当てを有効化
     "formation_min_distance": 0.1,  # 新規追加: フォーメーション達成とみなす最小距離
+    "formation_assignment_cooldown": 30,  # 新規追加: 割り当て変更のクールダウン期間（ステップ数）
+    "formation_assignment_min_diff": 0.05,  # 新規追加: 再割り当てを検討する最小距離差
 }
 ```
 
-##### 1.2.2 フォーメーション割り当て関数の追加
+**注意**: これらのパラメータは`formation_mode=True`の場合のみ使用されます。
+
+##### 1.2.2 フォーメーション割り当て関数の追加（チャタリング対策付き）
 
 ```python
 def assign_formation_offsets(
     self, 
     leader_pos: Array, 
     follower_positions: Array, 
-    formation_offsets: Array
-) -> Array:
+    formation_offsets: Array,
+    previous_assignment: Optional[Array] = None,  # 前回の割り当て
+    assignment_age: Optional[Array] = None,  # 各割り当ての経過ステップ数
+    cooldown_steps: int = 30,  # クールダウン期間（ステップ数）
+    min_distance_diff: float = 0.05,  # 再割り当てを検討する最小距離差
+) -> Tuple[Array, Array]:
     """
     フォロワーの現在位置に基づいて、最適なオフセット割り当てを決定する。
+    チャタリングを防ぐため、ヒステリシス（クールダウンタイム）を実装。
     
     Args:
         leader_pos: リーダーの位置 [x, y]
         follower_positions: フォロワーの現在位置 [n_followers, 2]
         formation_offsets: 利用可能なオフセット [n_offsets, 2]
+        previous_assignment: 前回の割り当て [n_followers] (オプション)
+        assignment_age: 各割り当ての経過ステップ数 [n_followers] (オプション)
+        cooldown_steps: 再割り当てを禁止する期間（ステップ数）
+        min_distance_diff: 再割り当てを検討する最小距離差
     
     Returns:
-        各フォロワーに割り当てるオフセットのインデックス [n_followers]
+        (assignment, new_assignment_age): 割り当てと更新された経過ステップ数
     """
     n_followers = follower_positions.shape[0]
     n_offsets = formation_offsets.shape[0]
+    
+    # 初期化
+    if previous_assignment is None:
+        previous_assignment = jnp.zeros(n_followers, dtype=jnp.int32)
+    if assignment_age is None:
+        assignment_age = jnp.zeros(n_followers, dtype=jnp.int32)
     
     # 各フォロワーと各オフセットの組み合わせについて、目標位置を計算
     target_positions = leader_pos[None, :] + formation_offsets[:, None, :]  # [n_offsets, n_followers, 2]
@@ -83,8 +109,7 @@ def assign_formation_offsets(
         axis=-1
     )  # [n_followers, n_offsets]
     
-    # ハンガリアンアルゴリズム（または貪欲法）で最適な割り当てを決定
-    # 簡易実装として貪欲法を使用
+    # 新しい割り当てを計算（クールダウンを考慮しない）
     assignment = jnp.zeros(n_followers, dtype=jnp.int32)
     used_offsets = jnp.zeros(n_offsets, dtype=jnp.bool_)
     
@@ -101,16 +126,68 @@ def assign_formation_offsets(
         used_offsets = used_offsets.at[best_offset_idx].set(True)
         return (assignment, used_offsets, distances), None
     
-    (assignment, _, _), _ = jax.lax.scan(
+    (new_assignment, _, _), _ = jax.lax.scan(
         assign_one,
         (assignment, used_offsets, distances),
         jnp.arange(n_followers)
     )
     
-    return assignment
+    # クールダウン期間中の割り当てを維持
+    # 前回の割り当てからの距離差を計算
+    current_distances = jnp.take_along_axis(
+        distances,
+        previous_assignment[:, None],
+        axis=1
+    ).squeeze(1)  # [n_followers]
+    
+    new_distances = jnp.take_along_axis(
+        distances,
+        new_assignment[:, None],
+        axis=1
+    ).squeeze(1)  # [n_followers]
+    
+    distance_improvement = current_distances - new_distances  # 改善量
+    
+    # クールダウン期間中、または改善が小さい場合は前回の割り当てを維持
+    in_cooldown = assignment_age < cooldown_steps
+    small_improvement = distance_improvement < min_distance_diff
+    
+    should_keep_previous = jnp.logical_or(in_cooldown, small_improvement)
+    
+    final_assignment = jnp.where(
+        should_keep_previous,
+        previous_assignment,
+        new_assignment
+    )
+    
+    # 割り当てが変更された場合はageをリセット、そうでなければインクリメント
+    assignment_changed = final_assignment != previous_assignment
+    new_assignment_age = jnp.where(
+        assignment_changed,
+        jnp.zeros(n_followers, dtype=jnp.int32),
+        assignment_age + 1
+    )
+    
+    return final_assignment, new_assignment_age
 ```
 
-##### 1.2.3 `step()`メソッドの変更
+##### 1.2.3 EnvStateの拡張（割り当て状態の保持）
+
+```python
+class EnvState(NamedTuple):
+    agent: AgentState
+    goal: State
+    obstacle: Obstacle
+    # 新規追加: フォーメーション割り当ての状態
+    formation_assignment: Optional[Array] = None  # 現在の割り当て [n_followers]
+    formation_assignment_age: Optional[Array] = None  # 割り当ての経過ステップ数 [n_followers]
+    
+    @property
+    def n_agent(self) -> int:
+        return self.agent.shape[0]
+```
+
+##### 1.2.4 `step()`メソッドの変更
 
 ```python
 def step(self, graph: EnvGraphsTuple, action: Action, ...) -> Tuple[...]:
@@ -123,29 +200,52 @@ def step(self, graph: EnvGraphsTuple, action: Action, ...) -> Tuple[...]:
             leader_pos = next_agent_states[0, :2]
             
             if self._params.get("formation_flexible_assignment", False):
-                # 柔軟な割り当てモード
+                # 柔軟な割り当てモード（チャタリング対策付き）
                 follower_indices = jnp.arange(1, self.num_agents)
                 follower_positions = next_agent_states[1:, :2]
-                offset_indices = self.assign_formation_offsets(
-                    leader_pos, follower_positions, formation_offsets
+                
+                # 前回の割り当て状態を取得
+                prev_assignment = graph.env_states.formation_assignment
+                prev_age = graph.env_states.formation_assignment_age
+                
+                offset_indices, new_age = self.assign_formation_offsets(
+                    leader_pos,
+                    follower_positions,
+                    formation_offsets,
+                    previous_assignment=prev_assignment,
+                    assignment_age=prev_age,
+                    cooldown_steps=self._params.get("formation_assignment_cooldown", 30),
+                    min_distance_diff=self._params.get("formation_assignment_min_diff", 0.05),
                 )
                 
                 # 割り当てられたオフセットに基づいてゴールを設定
-                for i, offset_idx in enumerate(follower_indices):
+                for i in range(len(follower_indices)):
                     offset = formation_offsets[offset_indices[i]]
                     goal_states = goal_states.at[i + 1, :2].set(leader_pos + offset)
+                
+                # 割り当て状態を更新（次回のstepで使用）
+                # 注意: EnvStateの更新は後で行う
             else:
                 # 既存の固定割り当てモード
                 for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
                     offset = jnp.array(formation_offsets[i-1])
                     goal_states = goal_states.at[i, :2].set(leader_pos + offset)
     
+    # EnvStateの更新時に割り当て状態も含める
+    next_state = self.EnvState(
+        next_agent_states,
+        goal_states,
+        obstacles,
+        formation_assignment=offset_indices if self._params.get("formation_flexible_assignment", False) else None,
+        formation_assignment_age=new_age if self._params.get("formation_flexible_assignment", False) else None,
+    )
+    
     # ... 既存の処理続き ...
 ```
 
-##### 1.2.4 `forward_graph()`メソッドの変更
+##### 1.2.5 `forward_graph()`メソッドの変更
 
-`step()`と同様の変更を`forward_graph()`にも適用します。
+`step()`と同様の変更を`forward_graph()`にも適用します。ただし、`forward_graph()`はグラフの前進計算のみを行うため、割り当て状態の更新は行わない（`step()`でのみ更新）。
 
 ### 2. リーダー優先の衝突回避（P2対応）
 
@@ -275,17 +375,22 @@ def get_pwise_cbf_fn(env: MultiAgentEnv, k: int, leader_priority: bool = False, 
 
 ##### 2.2.4 アルゴリズムクラスでの使用
 
-**ファイル**: `gcbfplus/algo/gcbf_plus.py`, `gcbfplus/algo/gcbf.py`, `gcbfplus/algo/dec_share_cbf.py`
+**ファイル**: `gcbfplus/algo/gcbf_plus.py` **のみ**
 
-各アルゴリズムクラスの`__init__`メソッドで、環境のパラメータを確認し、リーダー優先モードを有効化します。
+**重要**: リーダー優先モードは`GCBFPlus`クラスのみに適用されます。他のアルゴリズム（`GCBF`, `DecShareCBF`, `CentralizedCBF`）には適用しません。
 
 ```python
 def __init__(self, ...):
     # ... 既存の初期化処理 ...
     
-    # フォーメーションモードの場合、リーダー優先を有効化
+    # DoubleIntegrator環境かつフォーメーションモードの場合のみ、リーダー優先を有効化
+    env_name = env.__class__.__name__
     formation_mode = env.params.get("formation_mode", False)
-    leader_priority = formation_mode  # フォーメーションモード時は自動的に有効化
+    
+    if env_name == "DoubleIntegrator" and formation_mode:
+        leader_priority = True
+    else:
+        leader_priority = False
     
     self.cbf = get_pwise_cbf_fn(
         env, 
@@ -305,26 +410,32 @@ def __init__(self, ...):
 
 **ファイル**: `gcbfplus/env/double_integrator.py`
 
-##### 3.2.1 オフセット安全性チェック関数の追加
+##### 3.2.1 オフセット安全性チェック関数の追加（リーダー真後ろ方式）
 
 ```python
 def check_offset_safety(
     self,
     leader_pos: Array,
+    leader_velocity: Array,  # リーダーの速度 [vx, vy]
     offset: Array,
     obstacles: Obstacle,
     car_radius: float,
     comm_radius: float,
+    follower_idx: int,  # フォロワーのインデックス（重複回避用）
+    other_follower_offsets: Optional[Array] = None,  # 他のフォロワーのオフセット
 ) -> Tuple[Array, bool]:
     """
-    オフセット位置が安全かどうかをチェックする。
+    オフセット位置が安全かどうかをチェックし、安全でない場合はリーダーの真後ろに調整する。
     
     Args:
         leader_pos: リーダーの位置 [x, y]
+        leader_velocity: リーダーの速度 [vx, vy]
         offset: オフセット [x, y]
         obstacles: 障害物
         car_radius: エージェントの半径
         comm_radius: 通信半径（検出範囲）
+        follower_idx: フォロワーのインデックス（0-indexed、フォロワー1なら0、フォロワー2なら1）
+        other_follower_offsets: 他のフォロワーの現在のオフセット [n_other_followers, 2]
     
     Returns:
         (adjusted_offset, is_safe): 調整されたオフセットと安全性フラグ
@@ -339,92 +450,175 @@ def check_offset_safety(
     if is_safe:
         return offset, True
     
-    # 安全でない場合、オフセットを調整
-    # 方法1: オフセットの方向を維持しつつ、距離を縮める
-    offset_norm = jnp.linalg.norm(offset)
-    if offset_norm < 1e-6:
-        # オフセットがほぼ0の場合、デフォルトの安全な方向を選択
-        adjusted_offset = jnp.array([car_radius * 2, 0.0])
-        return adjusted_offset, False
+    # 安全でない場合、リーダーの真後ろの直線上に目標地点を設定
+    # リーダーの速度方向を取得（後ろ方向）
+    vel_norm = jnp.linalg.norm(leader_velocity)
     
-    offset_dir = offset / offset_norm
-    
-    # 障害物を回避する方向にオフセットを調整
-    # 簡易実装: オフセット方向を90度回転させた方向を試す
-    rotated_dir1 = jnp.array([-offset_dir[1], offset_dir[0]])
-    rotated_dir2 = jnp.array([offset_dir[1], -offset_dir[0]])
-    
-    # 両方向を試して、安全な方を選択
-    candidate1 = rotated_dir1 * offset_norm
-    candidate2 = rotated_dir2 * offset_norm
-    
-    pos1 = leader_pos + candidate1
-    pos2 = leader_pos + candidate2
-    
-    safe1 = not inside_obstacles(pos1[None, :], obstacles, r=car_radius)[0]
-    safe2 = not inside_obstacles(pos2[None, :], obstacles, r=car_radius)[0]
-    
-    if safe1:
-        return candidate1, True
-    elif safe2:
-        return candidate2, True
+    if vel_norm < 1e-6:
+        # リーダーが停止している場合、デフォルトの後ろ方向（-y方向）を使用
+        backward_dir = jnp.array([0.0, -1.0])
     else:
-        # どちらも安全でない場合、距離を縮める
-        min_safe_dist = car_radius * 3
-        adjusted_offset = offset_dir * min_safe_dist
-        return adjusted_offset, False
+        # リーダーの進行方向の逆（後ろ方向）
+        backward_dir = -leader_velocity / vel_norm
+    
+    # リーダーから後ろ方向への距離を設定（複数のフォロワーが重ならないように）
+    base_distance = car_radius * 3  # 基本距離
+    follower_spacing = car_radius * 4  # フォロワー間の間隔
+    
+    # 他のフォロワーが既に真後ろを使用しているかチェック
+    if other_follower_offsets is not None:
+        # 他のフォロワーのオフセットが後ろ方向かチェック
+        # 簡易実装: 他のフォロワーのオフセットが後ろ方向に近い場合、距離を調整
+        other_backward_distances = []
+        for other_offset in other_follower_offsets:
+            other_offset_norm = jnp.linalg.norm(other_offset)
+            if other_offset_norm > 1e-6:
+                other_dir = other_offset / other_offset_norm
+                # 後ろ方向との内積が大きい（後ろ方向に近い）場合
+                dot_product = jnp.dot(other_dir, backward_dir)
+                if dot_product > 0.7:  # 約45度以内
+                    other_backward_distances.append(other_offset_norm)
+        
+        if len(other_backward_distances) > 0:
+            # 既存のフォロワーの距離より遠くに配置
+            max_other_distance = jnp.max(jnp.array(other_backward_distances))
+            safe_distance = max_other_distance + follower_spacing
+        else:
+            safe_distance = base_distance
+    else:
+        safe_distance = base_distance + follower_idx * follower_spacing
+    
+    # リーダーの真後ろに目標地点を設定
+    adjusted_offset = backward_dir * safe_distance
+    adjusted_target_pos = leader_pos + adjusted_offset
+    
+    # 調整後の位置が安全かチェック
+    adjusted_is_safe = not inside_obstacles(adjusted_target_pos[None, :], obstacles, r=car_radius)[0]
+    
+    return adjusted_offset, adjusted_is_safe
 ```
 
-##### 3.2.2 動的オフセット調整の実装
+##### 3.2.2 動的オフセット調整の実装（チャタリング対策付き）
 
 ```python
 def adjust_formation_offsets(
     self,
     leader_pos: Array,
+    leader_velocity: Array,  # リーダーの速度 [vx, vy]
     formation_offsets: Array,
     obstacles: Obstacle,
-    current_follower_positions: Array = None,
-) -> Array:
+    previous_adjusted_offsets: Optional[Array] = None,  # 前回の調整済みオフセット
+    offset_state_age: Optional[Array] = None,  # 各オフセットの状態の経過ステップ数
+    cooldown_steps: int = 20,  # オフセット変更のクールダウン期間
+    safety_margin: float = 0.05,  # 安全性判定のマージン
+) -> Tuple[Array, Array]:
     """
     障害物を考慮してフォーメーションオフセットを動的に調整する。
+    チャタリングを防ぐため、ヒステリシスを実装。
     
     Args:
         leader_pos: リーダーの位置 [x, y]
+        leader_velocity: リーダーの速度 [vx, vy]
         formation_offsets: 元のオフセット [n_offsets, 2]
         obstacles: 障害物
-        current_follower_positions: フォロワーの現在位置 [n_followers, 2] (オプション)
+        previous_adjusted_offsets: 前回の調整済みオフセット [n_offsets, 2] (オプション)
+        offset_state_age: 各オフセットの状態の経過ステップ数 [n_offsets] (オプション)
+        cooldown_steps: オフセット変更のクールダウン期間（ステップ数）
+        safety_margin: 安全性判定のマージン
     
     Returns:
-        調整されたオフセット [n_offsets, 2]
+        (adjusted_offsets, new_offset_state_age): 調整されたオフセットと更新された経過ステップ数
     """
     n_offsets = formation_offsets.shape[0]
+    
+    # 初期化
+    if previous_adjusted_offsets is None:
+        previous_adjusted_offsets = formation_offsets
+    if offset_state_age is None:
+        offset_state_age = jnp.zeros(n_offsets, dtype=jnp.int32)
+    
     adjusted_offsets = jnp.zeros_like(formation_offsets)
     
     def adjust_one_offset(carry, offset_idx):
-        adjusted_offsets, leader_pos, formation_offsets, obstacles = carry
+        adjusted_offsets, leader_pos, leader_velocity, formation_offsets, obstacles, previous_adjusted_offsets, offset_state_age = carry
         offset = formation_offsets[offset_idx]
+        prev_offset = previous_adjusted_offsets[offset_idx]
+        age = offset_state_age[offset_idx]
         
-        adjusted_offset, _ = self.check_offset_safety(
+        # 他のフォロワーのオフセットを取得（重複回避用）
+        other_offsets = jnp.concatenate([
+            adjusted_offsets[:offset_idx],
+            adjusted_offsets[offset_idx+1:] if offset_idx < n_offsets - 1 else jnp.array([]).reshape(0, 2)
+        ], axis=0) if offset_idx > 0 or offset_idx < n_offsets - 1 else jnp.array([]).reshape(0, 2)
+        
+        # 新しいオフセットを計算
+        new_offset, is_safe = self.check_offset_safety(
             leader_pos,
+            leader_velocity,
             offset,
             obstacles,
             self._params["car_radius"],
             self._params["comm_radius"],
+            follower_idx=offset_idx,
+            other_follower_offsets=other_offsets if other_offsets.shape[0] > 0 else None,
         )
         
-        adjusted_offsets = adjusted_offsets.at[offset_idx].set(adjusted_offset)
-        return (adjusted_offsets, leader_pos, formation_offsets, obstacles), None
+        # 前回のオフセットが安全かチェック
+        prev_target_pos = leader_pos + prev_offset
+        from .utils import inside_obstacles
+        prev_is_safe = not inside_obstacles(prev_target_pos[None, :], obstacles, r=self._params["car_radius"])[0]
+        
+        # クールダウン期間中、または前回が安全で新しいものも安全な場合は前回を維持
+        in_cooldown = age < cooldown_steps
+        both_safe = prev_is_safe and is_safe
+        
+        # 前回が危険で新しいものが安全な場合は必ず変更
+        # 前回が安全で新しいものも安全な場合、クールダウン中は前回を維持
+        should_keep_previous = jnp.logical_and(
+            in_cooldown,
+            jnp.logical_or(both_safe, prev_is_safe)
+        )
+        
+        final_offset = jnp.where(should_keep_previous, prev_offset, new_offset)
+        offset_changed = jnp.any(jnp.abs(final_offset - prev_offset) > 1e-6)
+        
+        adjusted_offsets = adjusted_offsets.at[offset_idx].set(final_offset)
+        
+        # 状態の経過ステップ数を更新
+        new_age = jnp.where(offset_changed, jnp.array(0, dtype=jnp.int32), age + 1)
+        offset_state_age = offset_state_age.at[offset_idx].set(new_age)
+        
+        return (adjusted_offsets, leader_pos, leader_velocity, formation_offsets, obstacles, previous_adjusted_offsets, offset_state_age), None
     
-    (adjusted_offsets, _, _, _), _ = jax.lax.scan(
+    (adjusted_offsets, _, _, _, _, _, new_offset_state_age), _ = jax.lax.scan(
         adjust_one_offset,
-        (adjusted_offsets, leader_pos, formation_offsets, obstacles),
+        (adjusted_offsets, leader_pos, leader_velocity, formation_offsets, obstacles, previous_adjusted_offsets, offset_state_age),
         jnp.arange(n_offsets)
     )
     
-    return adjusted_offsets
+    return adjusted_offsets, new_offset_state_age
 ```
 
-##### 3.2.3 `step()`メソッドでの動的オフセット調整の適用
+##### 3.2.3 EnvStateの拡張（オフセット状態の保持）
+
+```python
+class EnvState(NamedTuple):
+    agent: AgentState
+    goal: State
+    obstacle: Obstacle
+    # 新規追加: フォーメーション割り当ての状態
+    formation_assignment: Optional[Array] = None
+    formation_assignment_age: Optional[Array] = None
+    # 新規追加: 動的オフセット調整の状態
+    formation_adjusted_offsets: Optional[Array] = None  # 調整済みオフセット [n_offsets, 2]
+    formation_offset_state_age: Optional[Array] = None  # 各オフセットの状態の経過ステップ数 [n_offsets]
+    
+    @property
+    def n_agent(self) -> int:
+        return self.agent.shape[0]
+```
+
+##### 3.2.4 `step()`メソッドでの動的オフセット調整の適用
 
 ```python
 def step(self, graph: EnvGraphsTuple, action: Action, ...) -> Tuple[...]:
@@ -435,43 +629,80 @@ def step(self, graph: EnvGraphsTuple, action: Action, ...) -> Tuple[...]:
         formation_offsets = self._params["formation_offsets"]
         if formation_offsets is not None:
             leader_pos = next_agent_states[0, :2]
+            leader_velocity = next_agent_states[0, 2:]  # リーダーの速度
             obstacles = graph.env_states.obstacle
             
             # 動的オフセット調整が有効な場合
             if self._params.get("formation_dynamic_offset", False):
-                # 障害物を考慮してオフセットを調整
-                adjusted_offsets = self.adjust_formation_offsets(
+                # 前回の調整済みオフセットと状態を取得
+                prev_adjusted_offsets = graph.env_states.formation_adjusted_offsets
+                prev_offset_state_age = graph.env_states.formation_offset_state_age
+                
+                # 障害物を考慮してオフセットを調整（チャタリング対策付き）
+                adjusted_offsets, new_offset_state_age = self.adjust_formation_offsets(
                     leader_pos,
+                    leader_velocity,
                     formation_offsets,
                     obstacles,
+                    previous_adjusted_offsets=prev_adjusted_offsets,
+                    offset_state_age=prev_offset_state_age,
+                    cooldown_steps=self._params.get("formation_offset_cooldown", 20),
+                    safety_margin=self._params.get("formation_offset_safety_margin", 0.05),
                 )
                 formation_offsets = adjusted_offsets
+            else:
+                new_offset_state_age = None
             
             # 柔軟な割り当てまたは固定割り当てでゴールを設定
-            # ... (1.2.3のコードと同様) ...
+            # ... (1.2.4のコードと同様) ...
+    
+    # EnvStateの更新時にオフセット状態も含める
+    next_state = self.EnvState(
+        next_agent_states,
+        goal_states,
+        obstacles,
+        formation_assignment=offset_indices if self._params.get("formation_flexible_assignment", False) else None,
+        formation_assignment_age=new_age if self._params.get("formation_flexible_assignment", False) else None,
+        formation_adjusted_offsets=adjusted_offsets if self._params.get("formation_dynamic_offset", False) else None,
+        formation_offset_state_age=new_offset_state_age if self._params.get("formation_dynamic_offset", False) else None,
+    )
     
     # ... 既存の処理続き ...
 ```
 
-##### 3.2.4 PARAMSの拡張
+##### 3.2.5 PARAMSの拡張
 
 ```python
 PARAMS = {
     # ... 既存のパラメータ ...
     "formation_dynamic_offset": False,  # 新規追加: 動的オフセット調整を有効化
     "formation_offset_safety_margin": 0.05,  # 新規追加: オフセット調整時の安全マージン
+    "formation_offset_cooldown": 20,  # 新規追加: オフセット変更のクールダウン期間（ステップ数）
+    "formation_follower_spacing": 0.2,  # 新規追加: 真後ろに配置する際のフォロワー間隔
 }
 ```
 
+**注意**: これらのパラメータは`formation_mode=True`かつ`formation_dynamic_offset=True`の場合のみ使用されます。
+
 ### 4. 統合的な実装の考慮事項
 
-#### 4.1 パラメータの優先順位
+#### 4.1 適用範囲の明確化
 
-1. **柔軟な割り当て** (`formation_flexible_assignment`): フォロワー間の交差問題を解決
-2. **リーダー優先** (`formation_mode`が有効な場合、自動的に有効化): リーダーとフォロワーの優先順位問題を解決
-3. **動的オフセット調整** (`formation_dynamic_offset`): 障害物によるフォーメーション維持不能問題を解決
+**重要**: すべての改善は以下の条件でのみ適用されます：
 
-#### 4.2 実装順序
+1. **環境**: `DoubleIntegrator`環境のみ
+2. **アルゴリズム**: `GCBFPlus`（gcbf+）アルゴリズムのみ
+3. **適用条件**: `formation_mode=True`が有効な場合のみ
+
+既存のformationモードが起動していない場合、すべての変更は適用されず、既存の動作が維持されます。
+
+#### 4.2 パラメータの優先順位
+
+1. **柔軟な割り当て** (`formation_flexible_assignment`): フォロワー間の交差問題を解決（チャタリング対策付き）
+2. **リーダー優先** (`formation_mode`が有効な場合、`GCBFPlus`で自動的に有効化): リーダーとフォロワーの優先順位問題を解決
+3. **動的オフセット調整** (`formation_dynamic_offset`): 障害物によるフォーメーション維持不能問題を解決（チャタリング対策付き）
+
+#### 4.3 実装順序
 
 1. **Phase 1**: リーダー優先の衝突回避（P2対応）
    - 最も重要で、他の改善の基盤となる
@@ -485,13 +716,22 @@ PARAMS = {
    - 最後に実装
    - 環境クラスの変更が必要
 
-#### 4.3 テストケース
+#### 4.4 チャタリング対策の検証
+
+各改善にはチャタリング対策が含まれています。以下のテストケースで動作確認が必要です：
+
+1. **P1テスト（チャタリング）**: フォロワーが2つのオフセットに対してほぼ等距離になった場合、割り当てが頻繁に切り替わらないか
+2. **P3テスト（チャタリング）**: オフセット位置が安全/危険の境界付近で、オフセットが頻繁に切り替わらないか
+3. **P3テスト（重複回避）**: 複数のフォロワーが同時に真後ろに配置される場合、目標地点が重ならないか
+
+#### 4.5 テストケース
 
 各改善を実装した後、以下のテストケースで動作確認が必要です：
 
 1. **P1テスト**: フォロワーが交差する初期配置で、柔軟な割り当てが機能するか
 2. **P2テスト**: リーダーがフォロワーに近づいた際、リーダーが回避せずにフォロワーが回避するか
-3. **P3テスト**: 障害物がフォーメーション幅より狭い場合、オフセットが動的に調整されるか
+3. **P3テスト**: 障害物がフォーメーション幅より狭い場合、オフセットが動的に調整されるか（真後ろ方式）
+4. **P3テスト（複数フォロワー）**: 2つのフォロワーが同時に危険な場合、両方が真後ろに配置されても目標地点が重ならないか
 
 ## 実装時の注意事項
 
@@ -503,12 +743,15 @@ PARAMS = {
 ### パフォーマンス
 
 - 動的オフセット調整は各ステップで実行されるため、計算コストを考慮する
-- 必要に応じて、オフセット調整の頻度を下げる（例: 数ステップに1回のみ）
+- チャタリング対策により、実際の再計算頻度は低くなる（クールダウン期間中は前回の値を維持）
+- 必要に応じて、クールダウン期間を調整してパフォーマンスと応答性のバランスを取る
 
 ### 後方互換性
 
 - 既存のパラメータ（`formation_mode`, `formation_offsets`）は維持する
 - 新しいパラメータはデフォルトで`False`または`None`にして、既存の動作を維持する
+- `formation_mode=False`の場合、すべての新機能は無効化され、既存の動作が維持される
+- `DoubleIntegrator`以外の環境、`GCBFPlus`以外のアルゴリズムでは、すべての変更は適用されない
 
 ## 参考実装箇所
 
