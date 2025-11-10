@@ -237,7 +237,7 @@ class DoubleIntegrator(MultiAgentEnv):
             assignment, used_offsets, distances = carry
             # 未使用のオフセットの中で、このフォロワーに最も近いものを選択
             masked_distances = jnp.where(
-                used_offsets[:, None],
+                used_offsets, #modified
                 jnp.inf,
                 distances[follower_idx, :]
             )
