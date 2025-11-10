@@ -57,7 +57,8 @@ def test(args):
         max_step=args.max_step,
         max_travel=args.max_travel,
         formation_mode=args.formation_mode,  # 追加
-        formation_offsets=formation_offsets  # 追加
+        formation_offsets=formation_offsets, # 追加
+        formation_flexible_assignment=args.formation_flexible_assignment  # 追加
     )
 
     if not args.u_ref:
@@ -286,6 +287,12 @@ def main():
         type=str,
         default=None,
         help="Formation offsets as JSON string, e.g., '[[0.3,0.0],[-0.3,0.0]]'"
+    )
+    parser.add_argument(
+        "--formation-flexible-assignment",
+        action="store_true",
+        default=False,
+        help="Enable flexible formation assignment (P1 feature)"
     )
 
     args = parser.parse_args()
