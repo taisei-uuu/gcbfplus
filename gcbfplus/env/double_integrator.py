@@ -190,10 +190,10 @@ class DoubleIntegrator(MultiAgentEnv):
         follower_positions: Array, 
         formation_offsets: Array,
         previous_assignment: Optional[Array] = None,  # 前回の割り当て
-        assignment_age: Optional[Array] = None,  # 各割り当ての経過ステップ数
-        cooldown_steps: int = 10,  # クールダウン期間（ステップ数）
+        assignment_age: int=0,  # 各割り当ての経過ステップ数
+        cooldown_steps: int = 15,  # クールダウン期間（ステップ数）
         min_distance_diff: float = 0.05,  # 再割り当てを検討する最小距離差
-    ) -> Tuple[Array, Array]:
+    ) -> Tuple[Array, int]:
         """
         フォロワーの現在位置に基づいて、最適なオフセット割り当てを決定する。
         チャタリングを防ぐため、ヒステリシス（クールダウンタイム）を実装。
@@ -203,9 +203,9 @@ class DoubleIntegrator(MultiAgentEnv):
             follower_positions: フォロワーの現在位置 [n_followers, 2]
             formation_offsets: 利用可能なオフセット [n_offsets, 2]
             previous_assignment: 前回の割り当て [n_followers] (オプション)
-            assignment_age: 各割り当ての経過ステップ数 [n_followers] (オプション)
+            assignment_age: 各割り当ての経過ステップ数 (オプション)
             cooldown_steps: 再割り当てを禁止する期間（ステップ数）
-            min_distance_diff: 再割り当てを検討する最小距離差
+            min_distance_diff: 再割り当てを検討する最小の総距離差
         
         Returns:
             (assignment, new_assignment_age): 割り当てと更新された経過ステップ数
@@ -216,8 +216,8 @@ class DoubleIntegrator(MultiAgentEnv):
         # 初期化
         if previous_assignment is None:
             previous_assignment = jnp.arange(n_followers, dtype=jnp.int32)
-        if assignment_age is None:
-            assignment_age = jnp.zeros(n_followers, dtype=jnp.int32)
+        # if assignment_age is None:
+        #     assignment_age = jnp.zeros(n_followers, dtype=jnp.int32)
         
         # 各フォロワーと各オフセットの組み合わせについて、目標位置を計算
         target_positions = leader_pos[None, :] + formation_offsets[:, None, :]  # [n_offsets, n_followers, 2]
@@ -253,20 +253,22 @@ class DoubleIntegrator(MultiAgentEnv):
         )
         
         # クールダウン期間中の割り当てを維持
-        # 前回の割り当てからの距離差を計算
+        # 前回の割り当てからの総距離差を計算
         current_distances = jnp.take_along_axis(
             distances,
             previous_assignment[:, None],
             axis=1
-        ).squeeze(1)  # [n_followers]
+        ).squeeze(1)
+        current_total_distance = jnp.sum(current_distances) # 総距離差
         
         new_distances = jnp.take_along_axis(
             distances,
             new_assignment[:, None],
             axis=1
-        ).squeeze(1)  # [n_followers]
+        ).squeeze(1)
+        new_total_distance = jnp.sum(new_distances)
         
-        distance_improvement = current_distances - new_distances  # 改善量
+        distance_improvement = current_total_distance - new_total_distance  # 改善量
         
         # クールダウン期間中、または改善が小さい場合は前回の割り当てを維持
         in_cooldown = assignment_age < cooldown_steps
@@ -281,10 +283,10 @@ class DoubleIntegrator(MultiAgentEnv):
         )
         
         # 割り当てが変更された場合はageをリセット、そうでなければインクリメント
-        assignment_changed = final_assignment != previous_assignment
+        assignment_changed = jnp.any(final_assignment != previous_assignment)
         new_assignment_age = jnp.where(
             assignment_changed,
-            jnp.zeros(n_followers, dtype=jnp.int32),
+            0,
             assignment_age + 1
         )
         
