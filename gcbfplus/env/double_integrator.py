@@ -25,6 +25,9 @@ class DoubleIntegrator(MultiAgentEnv):
         agent: AgentState
         goal: State
         obstacle: Obstacle
+        # フォーメーション割り当ての状態
+        formation_assignment: Optional[Array] = None  # 現在の割り当て [n_followers]
+        formation_assignment_age: Optional[Array] = None  # 割り当ての経過ステップ数 [n_followers]
 
         @property
         def n_agent(self) -> int:
@@ -41,6 +44,10 @@ class DoubleIntegrator(MultiAgentEnv):
         "m": 0.1,  # mass
         "formation_mode": False, #フォーメーションモード
         "formation_offsets": None, #フォーメーションオフセット
+        "formation_flexible_assignment": False,  # 柔軟な割り当てを有効化
+        "formation_min_distance": 0.1,  # フォーメーション達成とみなす最小距離
+        "formation_assignment_cooldown": 30,  # 割り当て変更のクールダウン期間（ステップ数）
+        "formation_assignment_min_diff": 0.05,  # 再割り当てを検討する最小距離差
     }
 
     def __init__(
@@ -110,16 +117,39 @@ class DoubleIntegrator(MultiAgentEnv):
         goals = jnp.concatenate([goals, jnp.zeros((self.num_agents, 2))], axis=1)
 
         #フォーメーションモードの場合
+        formation_assignment = None
+        formation_assignment_age = None
         if self._params.get("formation_mode", False):
             formation_offsets = self._params["formation_offsets"]
             if formation_offsets is not None:
                 leader_pos = states[0, :2]  # リーダーの位置 [x, y]
-                # フォロワーのゴールを設定
-                for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
-                    offset = jnp.array(formation_offsets[i-1])
-                    goals = goals.at[i, :2].set(leader_pos + offset)
+                
+                if self._params.get("formation_flexible_assignment", False):
+                    # 柔軟な割り当てモード: 初期割り当てを計算
+                    follower_positions = states[1:, :2]
+                    initial_assignment, initial_age = self.assign_formation_offsets(
+                        leader_pos,
+                        follower_positions,
+                        formation_offsets,
+                        previous_assignment=None,  # 初期状態なので前回の割り当てなし
+                        assignment_age=None,
+                        cooldown_steps=self._params.get("formation_assignment_cooldown", 30),
+                        min_distance_diff=self._params.get("formation_assignment_min_diff", 0.05),
+                    )
+                    formation_assignment = initial_assignment
+                    formation_assignment_age = initial_age
+                    
+                    # 割り当てられたオフセットに基づいてゴールを設定
+                    for i in range(len(initial_assignment)):
+                        offset = formation_offsets[initial_assignment[i]]
+                        goals = goals.at[i + 1, :2].set(leader_pos + offset)
+                else:
+                    # 既存の固定割り当てモード
+                    for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
+                        offset = jnp.array(formation_offsets[i-1])
+                        goals = goals.at[i, :2].set(leader_pos + offset)
 
-        env_states = self.EnvState(states, goals, obstacles)
+        env_states = self.EnvState(states, goals, obstacles, formation_assignment, formation_assignment_age)
 
         return self.get_graph(env_states)
 
@@ -154,6 +184,112 @@ class DoubleIntegrator(MultiAgentEnv):
         assert x_dot.shape == (self.num_agents, self.state_dim)
         return x_dot
 
+    def assign_formation_offsets(
+        self, 
+        leader_pos: Array, 
+        follower_positions: Array, 
+        formation_offsets: Array,
+        previous_assignment: Optional[Array] = None,  # 前回の割り当て
+        assignment_age: Optional[Array] = None,  # 各割り当ての経過ステップ数
+        cooldown_steps: int = 30,  # クールダウン期間（ステップ数）
+        min_distance_diff: float = 0.05,  # 再割り当てを検討する最小距離差
+    ) -> Tuple[Array, Array]:
+        """
+        フォロワーの現在位置に基づいて、最適なオフセット割り当てを決定する。
+        チャタリングを防ぐため、ヒステリシス（クールダウンタイム）を実装。
+        
+        Args:
+            leader_pos: リーダーの位置 [x, y]
+            follower_positions: フォロワーの現在位置 [n_followers, 2]
+            formation_offsets: 利用可能なオフセット [n_offsets, 2]
+            previous_assignment: 前回の割り当て [n_followers] (オプション)
+            assignment_age: 各割り当ての経過ステップ数 [n_followers] (オプション)
+            cooldown_steps: 再割り当てを禁止する期間（ステップ数）
+            min_distance_diff: 再割り当てを検討する最小距離差
+        
+        Returns:
+            (assignment, new_assignment_age): 割り当てと更新された経過ステップ数
+        """
+        n_followers = follower_positions.shape[0]
+        n_offsets = formation_offsets.shape[0]
+        
+        # 初期化
+        if previous_assignment is None:
+            previous_assignment = jnp.zeros(n_followers, dtype=jnp.int32)
+        if assignment_age is None:
+            assignment_age = jnp.zeros(n_followers, dtype=jnp.int32)
+        
+        # 各フォロワーと各オフセットの組み合わせについて、目標位置を計算
+        target_positions = leader_pos[None, :] + formation_offsets[:, None, :]  # [n_offsets, n_followers, 2]
+        target_positions = jnp.transpose(target_positions, (1, 0, 2))  # [n_followers, n_offsets, 2]
+        
+        # 各フォロワーから各目標位置への距離を計算
+        distances = jnp.linalg.norm(
+            follower_positions[:, None, :] - target_positions, 
+            axis=-1
+        )  # [n_followers, n_offsets]
+        
+        # 新しい割り当てを計算（クールダウンを考慮しない）
+        assignment = jnp.zeros(n_followers, dtype=jnp.int32)
+        used_offsets = jnp.zeros(n_offsets, dtype=jnp.bool_)
+        
+        def assign_one(carry, follower_idx):
+            assignment, used_offsets, distances = carry
+            # 未使用のオフセットの中で、このフォロワーに最も近いものを選択
+            masked_distances = jnp.where(
+                used_offsets[:, None],
+                jnp.inf,
+                distances[follower_idx, :]
+            )
+            best_offset_idx = jnp.argmin(masked_distances)
+            assignment = assignment.at[follower_idx].set(best_offset_idx)
+            used_offsets = used_offsets.at[best_offset_idx].set(True)
+            return (assignment, used_offsets, distances), None
+        
+        (new_assignment, _, _), _ = jax.lax.scan(
+            assign_one,
+            (assignment, used_offsets, distances),
+            jnp.arange(n_followers)
+        )
+        
+        # クールダウン期間中の割り当てを維持
+        # 前回の割り当てからの距離差を計算
+        current_distances = jnp.take_along_axis(
+            distances,
+            previous_assignment[:, None],
+            axis=1
+        ).squeeze(1)  # [n_followers]
+        
+        new_distances = jnp.take_along_axis(
+            distances,
+            new_assignment[:, None],
+            axis=1
+        ).squeeze(1)  # [n_followers]
+        
+        distance_improvement = current_distances - new_distances  # 改善量
+        
+        # クールダウン期間中、または改善が小さい場合は前回の割り当てを維持
+        in_cooldown = assignment_age < cooldown_steps
+        small_improvement = distance_improvement < min_distance_diff
+        
+        should_keep_previous = jnp.logical_or(in_cooldown, small_improvement)
+        
+        final_assignment = jnp.where(
+            should_keep_previous,
+            previous_assignment,
+            new_assignment
+        )
+        
+        # 割り当てが変更された場合はageをリセット、そうでなければインクリメント
+        assignment_changed = final_assignment != previous_assignment
+        new_assignment_age = jnp.where(
+            assignment_changed,
+            jnp.zeros(n_followers, dtype=jnp.int32),
+            assignment_age + 1
+        )
+        
+        return final_assignment, new_assignment_age
+
     def step(
         self, graph: EnvGraphsTuple, action: Action, get_eval_info: bool = False
     ) -> Tuple[EnvGraphsTuple, Reward, Cost, Done, Info]:
@@ -171,14 +307,43 @@ class DoubleIntegrator(MultiAgentEnv):
         next_agent_states = self.agent_step_euler(agent_states, action)
 
         # フォーメーションモードの場合、フォロワーのゴールを更新
+        formation_assignment = None
+        formation_assignment_age = None
         if self._params.get("formation_mode", False):
             formation_offsets = self._params["formation_offsets"]
             if formation_offsets is not None:
                 leader_pos = next_agent_states[0, :2]  # リーダーの新しい位置
-                # フォロワーのゴールを更新
-                for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
-                    offset = jnp.array(formation_offsets[i-1])
-                    goal_states = goal_states.at[i, :2].set(leader_pos + offset)
+                
+                if self._params.get("formation_flexible_assignment", False):
+                    # 柔軟な割り当てモード（チャタリング対策付き）
+                    follower_indices = jnp.arange(1, self.num_agents)
+                    follower_positions = next_agent_states[1:, :2]
+                    
+                    # 前回の割り当て状態を取得
+                    prev_assignment = graph.env_states.formation_assignment
+                    prev_age = graph.env_states.formation_assignment_age
+                    
+                    offset_indices, new_age = self.assign_formation_offsets(
+                        leader_pos,
+                        follower_positions,
+                        formation_offsets,
+                        previous_assignment=prev_assignment,
+                        assignment_age=prev_age,
+                        cooldown_steps=self._params.get("formation_assignment_cooldown", 30),
+                        min_distance_diff=self._params.get("formation_assignment_min_diff", 0.05),
+                    )
+                    formation_assignment = offset_indices
+                    formation_assignment_age = new_age
+                    
+                    # 割り当てられたオフセットに基づいてゴールを設定
+                    for i in range(len(offset_indices)):
+                        offset = formation_offsets[offset_indices[i]]
+                        goal_states = goal_states.at[i + 1, :2].set(leader_pos + offset)
+                else:
+                    # 既存の固定割り当てモード
+                    for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
+                        offset = jnp.array(formation_offsets[i-1])
+                        goal_states = goal_states.at[i, :2].set(leader_pos + offset)
 
         # the episode ends when reaching max_episode_steps
         done = jnp.array(False)
@@ -192,7 +357,13 @@ class DoubleIntegrator(MultiAgentEnv):
         assert cost.shape == tuple()
         assert done.shape == tuple()
 
-        next_state = self.EnvState(next_agent_states, goal_states, obstacles)
+        next_state = self.EnvState(
+            next_agent_states,
+            goal_states,
+            obstacles,
+            formation_assignment,
+            formation_assignment_age,
+        )
 
         info = {}
         if get_eval_info:
@@ -372,13 +543,31 @@ class DoubleIntegrator(MultiAgentEnv):
         next_agent_states = self.agent_step_euler(agent_states, action)
 
         # フォーメーションモードの場合、フォロワーのゴールを更新
+        # 注意: forward_graph()はグラフの前進計算のみを行うため、割り当て状態の更新は行わない
+        # 割り当て状態はstep()でのみ更新される
         if self._params.get("formation_mode", False):
             formation_offsets = self._params["formation_offsets"]
             if formation_offsets is not None:
                 leader_pos = next_agent_states[0, :2]
-                for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
-                    offset = jnp.array(formation_offsets[i-1])
-                    goal_states = goal_states.at[i, :2].set(leader_pos + offset)
+                
+                if self._params.get("formation_flexible_assignment", False):
+                    # 柔軟な割り当てモード: 前回の割り当てを使用（状態は更新しない）
+                    prev_assignment = graph.env_states.formation_assignment
+                    if prev_assignment is not None:
+                        # 前回の割り当てを使用してゴールを設定
+                        for i in range(len(prev_assignment)):
+                            offset = formation_offsets[prev_assignment[i]]
+                            goal_states = goal_states.at[i + 1, :2].set(leader_pos + offset)
+                    else:
+                        # 初期状態: 固定割り当てを使用
+                        for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
+                            offset = jnp.array(formation_offsets[i-1])
+                            goal_states = goal_states.at[i, :2].set(leader_pos + offset)
+                else:
+                    # 既存の固定割り当てモード
+                    for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
+                        offset = jnp.array(formation_offsets[i-1])
+                        goal_states = goal_states.at[i, :2].set(leader_pos + offset)
                     
         next_states = jnp.concatenate([next_agent_states, goal_states, obs_states], axis=0)
 
