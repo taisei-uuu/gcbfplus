@@ -191,7 +191,7 @@ class DoubleIntegrator(MultiAgentEnv):
         formation_offsets: Array,
         previous_assignment: Optional[Array] = None,  # 前回の割り当て
         assignment_age: Optional[Array] = None,  # 各割り当ての経過ステップ数
-        cooldown_steps: int = 30,  # クールダウン期間（ステップ数）
+        cooldown_steps: int = 10,  # クールダウン期間（ステップ数）
         min_distance_diff: float = 0.05,  # 再割り当てを検討する最小距離差
     ) -> Tuple[Array, Array]:
         """
@@ -210,12 +210,12 @@ class DoubleIntegrator(MultiAgentEnv):
         Returns:
             (assignment, new_assignment_age): 割り当てと更新された経過ステップ数
         """
-        n_followers = follower_positions.shape[0]
-        n_offsets = formation_offsets.shape[0]
+        n_followers = follower_positions.shape[0] #0行目=followerの数
+        n_offsets = formation_offsets.shape[0] #0行目=オフセットの数
         
         # 初期化
         if previous_assignment is None:
-            previous_assignment = jnp.zeros(n_followers, dtype=jnp.int32)
+            previous_assignment = jnp.arange(n_followers, dtype=jnp.int32)
         if assignment_age is None:
             assignment_age = jnp.zeros(n_followers, dtype=jnp.int32)
         
