@@ -22,6 +22,7 @@ from gcbfplus.env.base import MultiAgentEnv
 from gcbfplus.algo.module.cbf import CBF
 from gcbfplus.algo.module.policy import DeterministicPolicy
 from .gcbf import GCBF
+from .utils import get_pwise_cbf_fn
 
 
 class Batch(NamedTuple):
@@ -137,6 +138,23 @@ class GCBFPlus(GCBF):
         self.buffer = MaskedReplayBuffer(size=buffer_size)
         self.unsafe_buffer = MaskedReplayBuffer(size=buffer_size // 2)
         self.rng = np.random.default_rng(seed=seed + 1)
+        
+        # DoubleIntegrator環境かつフォーメーションモードの場合のみ、リーダー優先を有効化
+        env_name = env.__class__.__name__
+        formation_mode = env.params.get("formation_mode", False)
+        
+        if env_name == "DoubleIntegrator" and formation_mode:
+            leader_priority = True
+        else:
+            leader_priority = False
+        
+        # CBF関数を取得（リーダー優先モードが有効な場合）
+        self.pwise_cbf = get_pwise_cbf_fn(
+            env, 
+            k=3,  # デフォルトのk値
+            leader_priority=leader_priority,
+            leader_idx=0,  # エージェント0がリーダー
+        )
 
     @property
     def config(self) -> dict:

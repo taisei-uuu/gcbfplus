@@ -216,8 +216,8 @@ class DoubleIntegrator(MultiAgentEnv):
         # 初期化
         if previous_assignment is None:
             previous_assignment = jnp.arange(n_followers, dtype=jnp.int32)
-        # if assignment_age is None:
-        #     assignment_age = jnp.zeros(n_followers, dtype=jnp.int32)
+        if assignment_age is None:
+            assignment_age = 0
         
         # 各フォロワーと各オフセットの組み合わせについて、目標位置を計算
         target_positions = leader_pos[None, :] + formation_offsets[:, None, :]  # [n_offsets, n_followers, 2]

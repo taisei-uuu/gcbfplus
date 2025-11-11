@@ -76,7 +76,7 @@ def pwise_cbf_single_integrator(graph: GraphsTuple, r: float, n_agent: int, n_ra
     return ak_h0, ak_isobs
 
 
-def pwise_cbf_double_integrator_(state: Array, agent_idx: int, o_obs_state: Array, a_state: Array, r: float, k: int):
+def pwise_cbf_double_integrator_(state: Array, agent_idx: int, o_obs_state: Array, a_state: Array, r: float, k: int, leader_priority: bool = False, leader_idx: int = 0):
     n_agent = len(a_state)
 
     pos = state[:2]
@@ -84,10 +84,28 @@ def pwise_cbf_double_integrator_(state: Array, agent_idx: int, o_obs_state: Arra
     all_obs_pos = all_obs_state[:, :2]
     del o_obs_state
 
-    # Only consider the k closest obstacles.
-    o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
-    # Remove self collisions
-    o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
+    # リーダー優先モードの場合
+    if leader_priority:
+        if agent_idx == leader_idx:
+            # リーダーは他のエージェントを障害物として扱わない
+            # エージェント部分の距離を大きくして除外
+            o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
+            # Remove self collisions
+            o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
+            # エージェント部分（障害物以外）の距離を大きくして除外
+            agent_mask = jnp.arange(len(all_obs_state)) < n_agent
+            o_dist_sq = jnp.where(agent_mask, 1e2, o_dist_sq)
+        else:
+            # フォロワーはすべてのエージェントと障害物を考慮（既存の動作）
+            o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
+            # Remove self collisions
+            o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
+    else:
+        # 既存の処理（リーダー優先モードが無効な場合）
+        o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
+        # Remove self collisions
+        o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
+    
     # Take the k closest obstacles.
     k_idx = jnp.argsort(o_dist_sq)[:k]
     k_dist_sq = o_dist_sq[k_idx]
@@ -111,7 +129,7 @@ def pwise_cbf_double_integrator_(state: Array, agent_idx: int, o_obs_state: Arra
     return k_h1, k_isobs
 
 
-def pwise_cbf_double_integrator(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: int):
+def pwise_cbf_double_integrator(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: int, leader_priority: bool = False, leader_idx: int = 0):
     # (n_agents, 4)
     a_states = graph.type_states(type_idx=0, n_type=n_agent)
     # (n_obs, 4)
@@ -119,7 +137,16 @@ def pwise_cbf_double_integrator(graph: GraphsTuple, r: float, n_agent: int, n_ra
     a_obs_states = ei.rearrange(obs_states, "(n_agent n_ray) d -> n_agent n_ray d", n_agent=n_agent)
 
     agent_idx = jnp.arange(n_agent)
-    fn = jax.vmap(ft.partial(pwise_cbf_double_integrator_, r=r, k=k), in_axes=(0, 0, 0, None))
+    fn = jax.vmap(
+        ft.partial(
+            pwise_cbf_double_integrator_, 
+            r=r, 
+            k=k,
+            leader_priority=leader_priority,
+            leader_idx=leader_idx,
+        ), 
+        in_axes=(0, 0, 0, None)
+    )
     ak_h0, ak_isobs = fn(a_states, agent_idx, a_obs_states, a_states)
     return ak_h0, ak_isobs
 
@@ -410,7 +437,8 @@ def pwise_cbf_cfhl(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: i
     return ak_h0, ak_isobs
 
 
-def get_pwise_cbf_fn(env: MultiAgentEnv, k: int = 3):
+def get_pwise_cbf_fn(env: MultiAgentEnv, k: int = 3, leader_priority: bool = False, leader_idx: int = 0):
+    """CBF関数を取得する。フォーメーションモードの場合はリーダー優先を適用。"""
     if isinstance(env, SingleIntegrator):
         n_agent = env.num_agents
         n_rays = env.params["n_rays"]
@@ -420,7 +448,19 @@ def get_pwise_cbf_fn(env: MultiAgentEnv, k: int = 3):
         n_agent = env.num_agents
         n_rays = env.params["n_rays"]
         r = env.params["car_radius"]
-        return ft.partial(pwise_cbf_double_integrator, r=r, n_agent=n_agent, n_rays=n_rays, k=k)
+        # 環境のパラメータからフォーメーションモードを確認
+        formation_mode = env.params.get("formation_mode", False)
+        use_leader_priority = formation_mode and leader_priority
+        
+        return ft.partial(
+            pwise_cbf_double_integrator,
+            r=r,
+            n_agent=n_agent,
+            n_rays=n_rays,
+            k=k,
+            leader_priority=use_leader_priority,
+            leader_idx=leader_idx,
+        )
     elif isinstance(env, DubinsCar):
         r = env.params["car_radius"]
         n_agent = env.num_agents
