@@ -399,6 +399,49 @@ def __init__(self, ...):
         leader_idx=0,  # エージェント0がリーダー
     )
 ```
+#### 2.3 L_CBF（CBF損失）計算へのマスク適用
+
+注意: ここまでの変更は「CBF 関数の出力」および「学習時の教師データ」にリーダー優先のロジックを追加する内容でしたが、学習・最適化で実際に使われる損失項（特に gcbfplus/algo/gcbf_plus.py 内で計算される L_CBF）にも同等のマスクを入れる必要があります。さもないと、損失計算の段階でリーダーに対する他エージェント起因の h1 項が依然としてペナルティとなり、学習や制御挙動に意図しない影響を与えます。
+
+推奨実装（gcbfplus/algo/gcbf_plus.py 内の損失計算部に挿入するコード例）:
+
+```python
+# 例: gcbfplus/algo/gcbf_plus.py の該当箇所（損失計算部）
+# ak_h1: [n_agent, k] --- CBF の h1 値（agent/obstacle 混在）
+# ak_isobs: [n_agent, k] --- 各制約が障害物かどうかの bool
+# leader_priority: bool, leader_idx: int
+
+# マスクを作成: 障害物制約は常に有効、エージェント由来の制約は
+# リーダーに対して無視する（ゼロ化）ようにする
+if leader_priority:
+    n_agent = ak_h1.shape[0]
+    agent_indices = jnp.arange(n_agent)  # [0..n_agent-1]
+    # entry_keep: True ならその項を損失に含める
+    entry_keep = ak_isobs | (agent_indices[:, None] != leader_idx)
+    # マスクしてリーダーのエージェント関連制約を無視
+    masked_ak_h1 = jnp.where(entry_keep, ak_h1, 0.0)
+else:
+    masked_ak_h1 = ak_h1
+
+# あとは masked_ak_h1 を使って L_CBF を計算する
+# 例: ReLU 等を適用してから平均あるいは合計を損失に加える
+l_cbf_per_entry = jnp.maximum(0.0, -masked_ak_h1)  # 違反分だけをペナルティ
+L_CBF = jnp.mean(l_cbf_per_entry)  # または適切な重み付き和
+
+    return total_loss, {
+        'loss/action': loss_action,
+        'loss/unsafe': loss_unsafe,
+        'loss/safe': loss_safe,
+        'loss/h_dot': loss_h_dot,
+        'loss/cbf': loss_cbf, #ここが手作りcbf(リーダが盲目)の評価項
+        'loss/total': total_loss,
+        'acc/unsafe': acc_unsafe,
+        'acc/safe': acc_safe,
+        'acc/h_dot': acc_h_dot,
+        'acc/unsafe_data_ratio': unsafe_data_ratio
+    }
+```
+
 
 ### 3. フォロワー目標地点の安全性考慮と動的オフセット調整（P3対応）
 

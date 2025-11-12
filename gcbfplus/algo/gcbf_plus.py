@@ -56,6 +56,7 @@ class GCBFPlus(GCBF):
             loss_safe_coef: float = 1.,
             loss_h_dot_coef: float = 0.2,
             max_grad_norm: float = 2.,
+            loss_cbf_coef: float = 1.0,
             seed: int = 0,
             **kwargs
     ):
@@ -155,6 +156,10 @@ class GCBFPlus(GCBF):
             leader_priority=leader_priority,
             leader_idx=0,  # エージェント0がリーダー
         )
+        # store leader priority flags for loss masking
+        self.leader_priority = leader_priority
+        self.leader_idx = 0
+        self.loss_cbf_coef = loss_cbf_coef
 
     @property
     def config(self) -> dict:
@@ -430,23 +435,51 @@ class GCBFPlus(GCBF):
                 assert action.shape == minibatch.u_qp.shape
                 loss_action = jnp.mean(jnp.square(action - minibatch.u_qp).sum(axis=-1))
 
+                # Pairwise CBF (ak_h1) and masked CBF loss (L_CBF)
+                # self.pwise_cbf returns (ak_h1, ak_isobs) per graph; vectorize over minibatch
+                try:
+                    pwise_fn = jax_vmap(self.pwise_cbf)
+                    ak_h1, ak_isobs = pwise_fn(minibatch.graph)  # (minibatch, n_agent, k), (minibatch, n_agent, k)
+                    # Apply leader-priority mask: obstacles always kept; agent-derived constraints are ignored for leader
+                    if self.leader_priority:
+                        _, n_agent, _k = ak_h1.shape
+                        agent_indices = jnp.arange(n_agent)
+                        # shape (n_agent, k)
+                        entry_keep_agent = ak_isobs[0] | (agent_indices[:, None] != self.leader_idx)
+                        # broadcast to minibatch
+                        entry_keep = jnp.broadcast_to(entry_keep_agent[None, :, :], ak_h1.shape)
+                        masked_ak_h1 = jnp.where(entry_keep, ak_h1, 0.0)
+                    else:
+                        masked_ak_h1 = ak_h1
+
+                    # flatten minibatch and agent dims and compute violation
+                    masked_ak_h1_flat = merge01(masked_ak_h1)
+                    l_cbf_per_entry = jax.nn.relu(-masked_ak_h1_flat)
+                    loss_cbf = jnp.mean(l_cbf_per_entry)
+                except Exception:
+                    # If pwise CBF unavailable for this env/graph shape, fallback to zero loss
+                    loss_cbf = jnp.array(0.0)
                 # total loss
                 total_loss = (
-                        self.loss_action_coef * loss_action
-                        + self.loss_unsafe_coef * loss_unsafe
-                        + self.loss_safe_coef * loss_safe
-                        + self.loss_h_dot_coef * loss_h_dot
+                    self.loss_action_coef * loss_action
+                    + self.loss_unsafe_coef * loss_unsafe
+                    + self.loss_safe_coef * loss_safe
+                    + self.loss_h_dot_coef * loss_h_dot
+                    + self.loss_cbf_coef * loss_cbf
                 )
 
-                return total_loss, {'loss/action': loss_action,
-                                    'loss/unsafe': loss_unsafe,
-                                    'loss/safe': loss_safe,
-                                    'loss/h_dot': loss_h_dot,
-                                    'loss/total': total_loss,
-                                    'acc/unsafe': acc_unsafe,
-                                    'acc/safe': acc_safe,
-                                    'acc/h_dot': acc_h_dot,
-                                    'acc/unsafe_data_ratio': unsafe_data_ratio}
+                return total_loss, {
+                    'loss/action': loss_action,
+                    'loss/unsafe': loss_unsafe,
+                    'loss/safe': loss_safe,
+                    'loss/h_dot': loss_h_dot,
+                    'loss/cbf': loss_cbf,
+                    'loss/total': total_loss,
+                    'acc/unsafe': acc_unsafe,
+                    'acc/safe': acc_safe,
+                    'acc/h_dot': acc_h_dot,
+                    'acc/unsafe_data_ratio': unsafe_data_ratio
+                }
 
             (loss, loss_info), (grad_cbf, grad_actor) = jax.value_and_grad(
                 get_loss, has_aux=True, argnums=(0, 1))(cbf.params, actor.params)
