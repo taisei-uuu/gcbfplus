@@ -224,27 +224,37 @@ def get_node_goal_rng(
 
         # リーダーまたは非フォーメーションモードの場合は通常のランダム配置
         # フォロワーかつフォーメーションモードの場合はリーダー周辺に配置
-        if formation_mode and not is_leader:
-            # フォロワーの場合：リーダー周辺に配置
-            n_iter_agent, _, agent_candidate, _ = while_loop(
+        # jax.lax.condを使って条件分岐
+        # 条件: formation_mode かつ フォロワー（not is_leader）
+        # True の場合: get_follower_node を使う
+        # False の場合: get_node を使う
+        
+        def use_follower_logic(init_val):
+            """フォロワー用のロジックを実行"""
+            return while_loop(
                 cond_fun=non_valid_node, 
                 body_fun=get_follower_node,
-                init_val=(0, agent_key, agent_candidate, all_states)
+                init_val=init_val
             )
-        else:
-            # リーダーまたは非フォーメーションモードの場合：通常のランダム配置
-            n_iter_agent, _, agent_candidate, _ = while_loop(
+        
+        def use_leader_logic(init_val):
+            """リーダー用のロジックを実行"""
+            return while_loop(
                 cond_fun=non_valid_node, 
                 body_fun=get_node,
-                init_val=(0, agent_key, agent_candidate, all_states)
+                init_val=init_val
             )
-        # ===== ここまで修正 =====
-
-        # agent_candidate = jr.uniform(agent_key, (dim,), minval=0, maxval=side_length)
-        n_iter_agent, _, agent_candidate, _ = while_loop(
-            cond_fun=non_valid_node, body_fun=node_body_fun,
-            init_val=(0, agent_key, agent_candidate, all_states)
+        
+        # formation_mode かつ フォロワーの場合のみ、フォロワー用ロジックを使う
+        should_use_follower = formation_mode & (~is_leader)
+        
+        n_iter_agent, _, agent_candidate, _ = jax.lax.cond(
+            should_use_follower,
+            use_follower_logic,
+            use_leader_logic,
+            (0, agent_key, agent_candidate, all_states)
         )
+        
         all_states = all_states.at[agent_id].set(agent_candidate)
 
         if max_travel is None:
