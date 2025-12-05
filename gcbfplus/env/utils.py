@@ -138,9 +138,9 @@ def get_node_goal_rng(
         obstacles: Obstacle,
         n: int,
         min_dist: float,
-        max_travel: float = None
+        max_travel: float = None,
         formation_mode: bool = False, # フォーメーションモードかどうかのフラグ
-        formation_start_radius: float = 1.0 # リーダーの周囲に配置する半径
+        formation_start_radius: float = 1.0, # リーダーの周囲に配置する半径
 ) -> [Pos, Pos]:
     max_iter = 1024  # maximum number of iterations to find a valid initial state/goal
     states = jnp.zeros((n, dim))
