@@ -219,17 +219,25 @@ def get_node_goal_rng(
         # agent_idに応じて位置生成方法を切り替える
         is_leader = (agent_id == 0)
         
-        # 共通の初期候補を生成
+        # 初期候補を生成
         agent_candidate = jr.uniform(agent_key, (dim,), minval=0, maxval=side_length)
 
-        # while_loopに渡す関数を条件分岐で選択
-        # is_leaderがTrue、またはformation_modeがFalseの場合は、従来通りのランダム配置
-        # is_leaderがFalse、かつformation_modeがTrueの場合は、リーダー周辺に配置
-        node_body_fun = jax.lax.cond(
-            (is_leader) | (~formation_mode),
-            lambda: get_node, # リーダーまたは非フォーメーション時
-            lambda: get_follower_node # フォロワーかつフォーメーション時
-        )
+        # リーダーまたは非フォーメーションモードの場合は通常のランダム配置
+        # フォロワーかつフォーメーションモードの場合はリーダー周辺に配置
+        if formation_mode and not is_leader:
+            # フォロワーの場合：リーダー周辺に配置
+            n_iter_agent, _, agent_candidate, _ = while_loop(
+                cond_fun=non_valid_node, 
+                body_fun=get_follower_node,
+                init_val=(0, agent_key, agent_candidate, all_states)
+            )
+        else:
+            # リーダーまたは非フォーメーションモードの場合：通常のランダム配置
+            n_iter_agent, _, agent_candidate, _ = while_loop(
+                cond_fun=non_valid_node, 
+                body_fun=get_node,
+                init_val=(0, agent_key, agent_candidate, all_states)
+            )
         # ===== ここまで修正 =====
 
         # agent_candidate = jr.uniform(agent_key, (dim,), minval=0, maxval=side_length)
