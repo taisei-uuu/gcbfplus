@@ -139,6 +139,8 @@ def get_node_goal_rng(
         n: int,
         min_dist: float,
         max_travel: float = None
+        formation_mode: bool = False, # フォーメーションモードかどうかのフラグ
+        formation_start_radius: float = 1.0 # リーダーの周囲に配置する半径
 ) -> [Pos, Pos]:
     max_iter = 1024  # maximum number of iterations to find a valid initial state/goal
     states = jnp.zeros((n, dim))
@@ -149,6 +151,29 @@ def get_node_goal_rng(
         use_key, this_key = jr.split(this_key, 2)
         i_iter += 1
         return i_iter, this_key, jr.uniform(use_key, (dim,), minval=0, maxval=side_length), all_nodes
+
+    # ===== ここから追加：フォロワー用の位置生成関数 =====
+    def get_follower_node(reset_input: Tuple[int, Array, Array, Array]):
+        """リーダーの位置の周囲にフォロワーを生成する"""
+        i_iter, this_key, _, all_nodes = reset_input
+        use_key, this_key = jr.split(this_key, 2)
+        i_iter += 1
+        
+        # リーダーの位置を取得 (all_nodesの0番目がリーダー)
+        leader_pos = all_nodes[0]
+        
+        # リーダー位置中心の球体内にランダムな点を生成
+        random_direction = jr.normal(use_key, (dim,))
+        random_direction /= jnp.linalg.norm(random_direction)
+        random_radius = jr.uniform(use_key, minval=min_dist, maxval=formation_start_radius)
+        
+        follower_pos = leader_pos + random_direction * random_radius
+        
+        # 生成した位置がエリア外に出ないようにクリップする
+        follower_pos = jnp.clip(follower_pos, 0, side_length)
+
+        return i_iter, this_key, follower_pos, all_nodes
+    # ===== ここまで追加 =====
 
     def non_valid_node(reset_input: Tuple[int, Array, Array, Array]):  # key, node, all nodes
         i_iter, _, node, all_nodes = reset_input
@@ -189,9 +214,27 @@ def get_node_goal_rng(
         # agent_id, key, states, goals
         agent_id, this_key, all_states, all_goals = reset_input
         agent_key, goal_key, this_key = jr.split(this_key, 3)
+
+        # ===== ここから修正 =====
+        # agent_idに応じて位置生成方法を切り替える
+        is_leader = (agent_id == 0)
+        
+        # 共通の初期候補を生成
         agent_candidate = jr.uniform(agent_key, (dim,), minval=0, maxval=side_length)
+
+        # while_loopに渡す関数を条件分岐で選択
+        # is_leaderがTrue、またはformation_modeがFalseの場合は、従来通りのランダム配置
+        # is_leaderがFalse、かつformation_modeがTrueの場合は、リーダー周辺に配置
+        node_body_fun = jax.lax.cond(
+            (is_leader) | (~formation_mode),
+            lambda: get_node, # リーダーまたは非フォーメーション時
+            lambda: get_follower_node # フォロワーかつフォーメーション時
+        )
+        # ===== ここまで修正 =====
+
+        # agent_candidate = jr.uniform(agent_key, (dim,), minval=0, maxval=side_length)
         n_iter_agent, _, agent_candidate, _ = while_loop(
-            cond_fun=non_valid_node, body_fun=get_node,
+            cond_fun=non_valid_node, body_fun=node_body_fun,
             init_val=(0, agent_key, agent_candidate, all_states)
         )
         all_states = all_states.at[agent_id].set(agent_candidate)

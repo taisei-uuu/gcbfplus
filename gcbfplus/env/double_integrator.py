@@ -110,7 +110,11 @@ class DoubleIntegrator(MultiAgentEnv):
 
         # randomly generate agent and goal
         states, goals = get_node_goal_rng(
-            key, self.area_size, 2, obstacles, self.num_agents, 4 * self.params["car_radius"], self.max_travel)
+            key, self.area_size, 2, obstacles, self.num_agents, 4 * self.params["car_radius"], self.max_travel,
+            # 初期位置を限定
+            formation_mode=self._params.get("formation_mode", False),
+            formation_start_radius=self.area_size / 4.0  # 例：エリアサイズの1/4を初期配置の半径とする
+        )
 
         # add zero velocity
         states = jnp.concatenate([states, jnp.zeros((self.num_agents, 2))], axis=1)
