@@ -48,6 +48,7 @@ class DoubleIntegrator(MultiAgentEnv):
         "formation_min_distance": 0.1,  # フォーメーション達成とみなす最小距離
         "formation_assignment_cooldown": 30,  # 割り当て変更のクールダウン期間（ステップ数）
         "formation_assignment_min_diff": 0.05,  # 再割り当てを検討する最小距離差
+        "fixed_config": None,  # 固定シナリオ設定
     }
 
     def __init__(
@@ -92,29 +93,53 @@ class DoubleIntegrator(MultiAgentEnv):
     def reset(self, key: Array) -> GraphsTuple:
         self._t = 0
 
-        # randomly generate obstacles
-        n_rng_obs = self._params["n_obs"]
-        assert n_rng_obs >= 0
-        obstacle_key, key = jr.split(key, 2)
-        obs_pos = jr.uniform(obstacle_key, (n_rng_obs, 2), minval=0, maxval=self.area_size)
-        length_key, key = jr.split(key, 2)
-        obs_len = jr.uniform(
-            length_key,
-            (n_rng_obs, 2),
-            minval=self._params["obs_len_range"][0],
-            maxval=self._params["obs_len_range"][1],
-        )
-        theta_key, key = jr.split(key, 2)
-        obs_theta = jr.uniform(theta_key, (n_rng_obs,), minval=0, maxval=2 * np.pi)
-        obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
-
-        # randomly generate agent and goal
-        states, goals = get_node_goal_rng(
-            key, self.area_size, 2, obstacles, self.num_agents, 4 * self.params["car_radius"], self.max_travel,
-            # 初期位置を限定
-            formation_mode=self._params.get("formation_mode", False),
-            formation_start_radius=self.area_size / 4.0  # 例：エリアサイズの1/4を初期配置の半径とする
-        )
+        # 固定シナリオモードのチェック
+        fixed_config = self._params.get("fixed_config", None)
+        
+        if fixed_config is not None:
+            # --- 固定設定を使用 ---
+            # Obstacles
+            obs_conf = fixed_config["obstacles"]
+            # obs_conf is expected to be a list of dicts or a structured object, 
+            # here we assume simple array structure for easy JAX handling or pre-processed dict
+            # user-provided dict: {"pos": [[x,y], ...], "len": [[w,h], ...], "theta": [t, ...]}
+            obs_pos = jnp.array(obs_conf["pos"])
+            obs_len = jnp.array(obs_conf["len"])
+            obs_theta = jnp.array(obs_conf["theta"])
+            obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
+            
+            # Agents
+            agent_conf = fixed_config["agents"]
+            states = jnp.array(agent_conf["start"])
+            goals = jnp.array(agent_conf["goal"])
+            
+            # エージェント数が合っているか確認 (Optional)
+            # assert states.shape[0] == self.num_agents
+        else:
+            # --- 通常のランダム生成 ---
+            # randomly generate obstacles
+            n_rng_obs = self._params["n_obs"]
+            assert n_rng_obs >= 0
+            obstacle_key, key = jr.split(key, 2)
+            obs_pos = jr.uniform(obstacle_key, (n_rng_obs, 2), minval=0, maxval=self.area_size)
+            length_key, key = jr.split(key, 2)
+            obs_len = jr.uniform(
+                length_key,
+                (n_rng_obs, 2),
+                minval=self._params["obs_len_range"][0],
+                maxval=self._params["obs_len_range"][1],
+            )
+            theta_key, key = jr.split(key, 2)
+            obs_theta = jr.uniform(theta_key, (n_rng_obs,), minval=0, maxval=2 * np.pi)
+            obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
+    
+            # randomly generate agent and goal
+            states, goals = get_node_goal_rng(
+                key, self.area_size, 2, obstacles, self.num_agents, 4 * self.params["car_radius"], self.max_travel,
+                # 初期位置を限定
+                formation_mode=self._params.get("formation_mode", False),
+                formation_start_radius=self._get_formation_radius() 
+            )
 
         # add zero velocity
         states = jnp.concatenate([states, jnp.zeros((self.num_agents, 2))], axis=1)

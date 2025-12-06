@@ -48,6 +48,12 @@ def test(args):
     if args.formation_offsets:
         import json
         formation_offsets = json.loads(args.formation_offsets)
+
+    # fixed_configのパース
+    fixed_config = None
+    if args.fixed_config:
+        import json
+        fixed_config = json.loads(args.fixed_config)
     
     env = make_env(
         env_id=config.env if args.env is None else args.env,
@@ -58,7 +64,8 @@ def test(args):
         max_travel=args.max_travel,
         formation_mode=args.formation_mode,  # 追加
         formation_offsets=formation_offsets, # 追加
-        formation_flexible_assignment=args.formation_flexible_assignment  # 追加
+        formation_flexible_assignment=args.formation_flexible_assignment,  # 追加
+        fixed_config=fixed_config # 追加
     )
 
     if not args.u_ref:
@@ -293,6 +300,12 @@ def main():
         action="store_true",
         default=False,
         help="Enable flexible formation assignment (P1 feature)"
+    )
+    parser.add_argument(
+        "--fixed-config",
+        type=str,
+        default=None,
+        help="Fixed scenario configuration as JSON string"
     )
 
     args = parser.parse_args()
