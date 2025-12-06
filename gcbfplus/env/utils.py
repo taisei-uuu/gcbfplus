@@ -246,7 +246,9 @@ def get_node_goal_rng(
             )
         
         # formation_mode かつ フォロワーの場合のみ、フォロワー用ロジックを使う
-        should_use_follower = formation_mode & (~is_leader)
+        # explicit logical operations for safety with JAX tracers
+        is_follower = jnp.logical_not(is_leader)
+        should_use_follower = jnp.logical_and(formation_mode, is_follower)
         
         n_iter_agent, _, agent_candidate, _ = jax.lax.cond(
             should_use_follower,
