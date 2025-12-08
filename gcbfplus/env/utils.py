@@ -243,6 +243,22 @@ def get_node_goal_rng(
         
         agent_candidate = jax.lax.select(should_use_follower, agent_candidate_local, agent_candidate_global)
         
+        def use_follower_logic(init_val):
+            """フォロワー用のロジックを実行"""
+            return while_loop(
+                cond_fun=non_valid_node, 
+                body_fun=get_follower_node,
+                init_val=init_val
+            )
+        
+        def use_leader_logic(init_val):
+            """リーダー用のロジックを実行"""
+            return while_loop(
+                cond_fun=non_valid_node, 
+                body_fun=get_node,
+                init_val=init_val
+            )
+
         n_iter_agent, _, agent_candidate, _ = jax.lax.cond(
             should_use_follower,
             use_follower_logic,
