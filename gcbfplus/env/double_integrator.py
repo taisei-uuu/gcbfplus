@@ -96,6 +96,11 @@ class DoubleIntegrator(MultiAgentEnv):
         norms = jnp.linalg.norm(offsets, axis=1)
         max_radius = jnp.max(norms)
         
+        # 最小距離（4 * car_radius）以上の大きさを確保する
+        # エージェント間の物理的なクリアランスを考慮
+        min_dist = 4.0 * self._params["car_radius"]
+        max_radius = jnp.maximum(max_radius, min_dist * 1.5)
+        
         return max_radius
 
     @property

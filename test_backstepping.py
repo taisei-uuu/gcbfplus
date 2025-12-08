@@ -14,7 +14,12 @@ def test_backstepping_implementation():
         "formation_offsets": [[-0.5, 0.0], [0.5, 0.0]], # 2 followers
         "kp_bs": 1.0,
         "kv_bs": 2.0,
-        "m": 1.0 # simplify mass
+        "m": 1.0, # simplify mass
+        "n_obs": 2,
+        "n_rays": 32,
+        "comm_radius": 2.0,
+        "car_radius": 0.1,
+        "obs_len_range": [0.2, 0.4]
     }
     env = DoubleIntegrator(num_agents=num_agents, area_size=10.0, params=params)
     key = jax.random.PRNGKey(0)
@@ -90,6 +95,28 @@ def test_backstepping_implementation():
         print(">>> Goal Velocity Update PASSED")
     else:
         print(">>> Goal Velocity Update FAILED")
+
+    # 3. Verify Formation Initial Positioning
+    print("\n[Test 3] Verifying Initial Formation Positioning...")
+    
+    # Calculate distances from leader (Agent 0)
+    agent_pos = agent_states[:, :2]
+    leader_pos = agent_pos[0]
+    follower_positions = agent_pos[1:]
+    
+    distances = jnp.linalg.norm(follower_positions - leader_pos, axis=1)
+    print(f"Follower distances from leader: {distances}")
+    
+    # Expected max distance is formation_start_radius
+    # Calculated in env: max(0.56, 4*car_radius*1.5 = 0.6) approx 0.6
+    # Allowing some margin
+    max_dist = 1.0 
+    
+    if jnp.all(distances < max_dist):
+        print(">>> Formation Positioning PASSED (All agents close to leader)")
+    else:
+        print(">>> Formation Positioning FAILED (Agents scattered)")
+        print(f"Distances: {distances}")
 
 if __name__ == "__main__":
     test_backstepping_implementation()
