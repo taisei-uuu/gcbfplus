@@ -223,39 +223,25 @@ def get_node_goal_rng(
         # agent_idに応じて位置生成方法を切り替える
         is_leader = (agent_id == 0)
         
-        # 初期候補を生成
-        agent_candidate = jr.uniform(agent_key, (dim,), minval=0, maxval=side_length)
+        # 初期候補を生成 (デフォルトは全体からランダム)
+        agent_key, local_key = jr.split(agent_key)
+        agent_candidate_global = jr.uniform(agent_key, (dim,), minval=0, maxval=side_length)
 
-        # リーダーまたは非フォーメーションモードの場合は通常のランダム配置
-        # フォロワーかつフォーメーションモードの場合はリーダー周辺に配置
-        # jax.lax.condを使って条件分岐
-        # 条件: formation_mode かつ フォロワー（not is_leader）
-        # True の場合: get_follower_node を使う
-        # False の場合: get_node を使う
-        
-        def use_follower_logic(init_val):
-            """フォロワー用のロジックを実行"""
-            return while_loop(
-                cond_fun=non_valid_node, 
-                body_fun=get_follower_node,
-                init_val=init_val
-            )
-        
-        def use_leader_logic(init_val):
-            """リーダー用のロジックを実行"""
-            return while_loop(
-                cond_fun=non_valid_node, 
-                body_fun=get_node,
-                init_val=init_val
-            )
-        
-        # formation_mode かつ フォロワーの場合のみ、フォロワー用ロジックを使う
-        # explicit logical operations for safety with JAX tracers
+        # フォロワーの場合は、最初からリーダーの近くで候補を生成する
+        # これをしないと、初期候補（全体ランダム）がたまたま衝突していなければ、
+        # formationロジック（get_follower_node）が一度も呼ばれずにループを抜けてしまう
+        leader_pos = all_states[0]
+        random_direction = jr.normal(local_key, (dim,))
+        random_direction /= jnp.linalg.norm(random_direction)
+        random_radius = jr.uniform(local_key, minval=min_dist, maxval=formation_start_radius)
+        agent_candidate_local = leader_pos + random_direction * random_radius
+        agent_candidate_local = jnp.clip(agent_candidate_local, 0, side_length)
+
+        # formation_mode かつ フォロワーの場合のみ、フォロワー用ロジック（と初期値）を使う
         is_follower = jnp.logical_not(is_leader)
         should_use_follower = jnp.logical_and(formation_mode, is_follower)
         
-        # DEBUG PRINTS
-        jax.debug.print("Agent: {}, Follower?: {}, UseFollowerLogic?: {}", agent_id, is_follower, should_use_follower)
+        agent_candidate = jax.lax.select(should_use_follower, agent_candidate_local, agent_candidate_global)
         
         n_iter_agent, _, agent_candidate, _ = jax.lax.cond(
             should_use_follower,
