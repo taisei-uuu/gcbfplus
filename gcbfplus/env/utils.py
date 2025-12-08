@@ -250,6 +250,9 @@ def get_node_goal_rng(
         is_follower = jnp.logical_not(is_leader)
         should_use_follower = jnp.logical_and(formation_mode, is_follower)
         
+        # DEBUG PRINTS
+        jax.debug.print("Agent: {}, Follower?: {}, UseFollowerLogic?: {}", agent_id, is_follower, should_use_follower)
+        
         n_iter_agent, _, agent_candidate, _ = jax.lax.cond(
             should_use_follower,
             use_follower_logic,
