@@ -76,6 +76,26 @@ class DoubleIntegrator(MultiAgentEnv):
         self._K = jnp.array(lqr(self._A, self._B, self._Q, self._R))
         self.create_obstacles = jax_vmap(Rectangle.create)
 
+    def _get_formation_radius(self) -> float:
+        """
+        フォーメーションオフセットの最大半径を返す
+        """
+        if not self._params.get("formation_mode", False):
+            return 0.0
+        
+        offsets = self._params.get("formation_offsets", None)
+        if offsets is None:
+            return 0.0
+            
+        # オフセットのノルムの最大値を計算
+        max_radius = 0.0
+        for offset in offsets:
+            r = np.linalg.norm(offset)
+            if r > max_radius:
+                max_radius = r
+        
+        return float(max_radius)
+
     @property
     def state_dim(self) -> int:
         return 4  # x, y, vx, vy
