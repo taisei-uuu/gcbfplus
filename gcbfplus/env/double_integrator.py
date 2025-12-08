@@ -87,14 +87,16 @@ class DoubleIntegrator(MultiAgentEnv):
         if offsets is None:
             return 0.0
             
-        # オフセットのノルムの最大値を計算
-        max_radius = 0.0
-        for offset in offsets:
-            r = np.linalg.norm(offset)
-            if r > max_radius:
-                max_radius = r
+        # JAX arrayとして扱い、jnp関数を使用する (TracerArrayConversionError回避)
+        offsets = jnp.array(offsets)
+        if offsets.shape[0] == 0:
+            return 0.0
+
+        # ベクトル化された計算
+        norms = jnp.linalg.norm(offsets, axis=1)
+        max_radius = jnp.max(norms)
         
-        return float(max_radius)
+        return max_radius
 
     @property
     def state_dim(self) -> int:
