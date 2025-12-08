@@ -171,6 +171,10 @@ def get_node_goal_rng(
         
         # 生成した位置がエリア外に出ないようにクリップする
         follower_pos = jnp.clip(follower_pos, 0, side_length)
+        
+        dist = jnp.linalg.norm(follower_pos - leader_pos)
+        jax.debug.print("GENERATE FOLLOWER: Leader={}, Follower={}, Dist={}, RadiusLimit={}", 
+                        leader_pos, follower_pos, dist, formation_start_radius)
 
         return i_iter, this_key, follower_pos, all_nodes
     # ===== ここまで追加 =====
