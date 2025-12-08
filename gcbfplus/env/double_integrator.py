@@ -49,6 +49,8 @@ class DoubleIntegrator(MultiAgentEnv):
         "formation_assignment_cooldown": 30,  # 割り当て変更のクールダウン期間（ステップ数）
         "formation_assignment_min_diff": 0.05,  # 再割り当てを検討する最小距離差
         "fixed_config": None,  # 固定シナリオ設定
+        "kp_bs": 1.0,  # Backstepping position gain
+        "kv_bs": 2.0,  # Backstepping velocity gain
     }
 
     def __init__(
@@ -375,6 +377,10 @@ class DoubleIntegrator(MultiAgentEnv):
                     for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
                         offset = jnp.array(formation_offsets[i-1])
                         goal_states = goal_states.at[i, :2].set(leader_pos + offset)
+            
+            # リーダーの速度をフォロワーの目標速度として設定
+            leader_vel = next_agent_states[0, 2:]
+            goal_states = goal_states.at[1:, 2:].set(leader_vel)
 
         # the episode ends when reaching max_episode_steps
         done = jnp.array(False)
@@ -556,10 +562,37 @@ class DoubleIntegrator(MultiAgentEnv):
     def u_ref(self, graph: GraphsTuple) -> Action:
         agent = graph.type_states(type_idx=0, n_type=self.num_agents)
         goal = graph.type_states(type_idx=1, n_type=self.num_agents)
-        error = goal - agent
-        error_max = jnp.abs(error / jnp.linalg.norm(error, axis=-1, keepdims=True) * self._params["comm_radius"])
-        error = jnp.clip(error, -error_max, error_max)
-        return self.clip_action(error @ self._K.T)
+        
+        # Backstepping Control
+        # x_i: agent[:, :2], v_i: agent[:, 2:]
+        # p_i^d: goal[:, :2], v_i^d: goal[:, 2:]
+        # a_i^d is assumed to be 0
+        
+        x_i = agent[:, :2]
+        v_i = agent[:, 2:]
+        p_d = goal[:, :2]
+        v_d = goal[:, 2:]
+        
+        kp = self._params["kp_bs"]
+        kv = self._params["kv_bs"]
+        
+        # Step 1: Position Error
+        e_p = x_i - p_d
+        
+        # Virtual Velocity Reference
+        # v_{i,ref} = -k_p * e_p + v_d
+        v_ref = -kp * e_p + v_d
+        
+        # Step 2: Velocity Error
+        # e_v = v_i - v_{i,ref}
+        e_v = v_i - v_ref
+        
+        # Control Input
+        # u_i = -k_v * e_v - e_p
+        # (Assuming a_d = 0)
+        u_bs = -kv * e_v - e_p
+        
+        return self.clip_action(u_bs)
 
     def forward_graph(self, graph: GraphsTuple, action: Action) -> GraphsTuple:
         # calculate next graph
@@ -599,6 +632,10 @@ class DoubleIntegrator(MultiAgentEnv):
                     for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
                         offset = jnp.array(formation_offsets[i-1])
                         goal_states = goal_states.at[i, :2].set(leader_pos + offset)
+            
+            # リーダーの速度をフォロワーの目標速度として設定
+            leader_vel = next_agent_states[0, 2:]
+            goal_states = goal_states.at[1:, 2:].set(leader_vel)
                     
         next_states = jnp.concatenate([next_agent_states, goal_states, obs_states], axis=0)
 
