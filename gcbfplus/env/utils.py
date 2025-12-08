@@ -165,7 +165,8 @@ def get_node_goal_rng(
         # リーダー位置中心の球体内にランダムな点を生成
         random_direction = jr.normal(use_key, (dim,))
         random_direction /= jnp.linalg.norm(random_direction)
-        random_radius = jr.uniform(use_key, minval=min_dist, maxval=formation_start_radius)
+        # Margin to avoid collision check
+        random_radius = jr.uniform(use_key, minval=min_dist * 1.1, maxval=formation_start_radius)
         
         follower_pos = leader_pos + random_direction * random_radius
         
@@ -233,7 +234,8 @@ def get_node_goal_rng(
         leader_pos = all_states[0]
         random_direction = jr.normal(local_key, (dim,))
         random_direction /= jnp.linalg.norm(random_direction)
-        random_radius = jr.uniform(local_key, minval=min_dist, maxval=formation_start_radius)
+        # Margin to avoid 'dist <= min_dist' collision check floating point issues
+        random_radius = jr.uniform(local_key, minval=min_dist * 1.1, maxval=formation_start_radius)
         agent_candidate_local = leader_pos + random_direction * random_radius
         agent_candidate_local = jnp.clip(agent_candidate_local, 0, side_length)
 
