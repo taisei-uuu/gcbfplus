@@ -50,7 +50,12 @@ class DoubleIntegrator(MultiAgentEnv):
         "formation_assignment_min_diff": 0.05,  # 再割り当てを検討する最小距離差
         "fixed_config": None,  # 固定シナリオ設定
         "kp_bs": 1.0,  # Backstepping position gain
+        "kp_bs": 1.0,  # Backstepping position gain
         "kv_bs": 2.0,  # Backstepping velocity gain
+        # Anisotropic Scaling Parameters
+        "s_min": 0.7,         # Minimum scaling factor (y-direction)
+        "d_critical": 1.2,    # Distance where scaling starts
+        "d_free": 2.4,        # Distance where scaling ends
     }
 
     def __init__(
@@ -242,6 +247,86 @@ class DoubleIntegrator(MultiAgentEnv):
         assert x_dot.shape == (self.num_agents, self.state_dim)
         return x_dot
 
+    def compute_scaling_factor_y(self, min_obstacle_distance: float) -> float:
+        """
+        Compute the scaling factor in the y-direction (transverse to motion)
+        based on the minimum distance to obstacles.
+        """
+        s_min = self._params["s_min"]
+        d_critical = self._params["d_critical"]
+        d_free = self._params["d_free"]
+        
+        scale = jnp.where(
+            min_obstacle_distance < d_critical,
+            s_min,
+            jnp.where(
+                min_obstacle_distance <= d_free,
+                s_min + (1.0 - s_min) * (min_obstacle_distance - d_critical) / (d_free - d_critical),
+                1.0
+            )
+        )
+        return scale
+
+    def compute_scaling_factor_x(self, sy: float) -> float:
+        """
+        Compute the scaling factor in the x-direction (along motion)
+        to preserve area.
+        """
+        # sx * sy = 1.0  => sx = 1.0 / sy
+        # clamp sy to avoid huge sx
+        safe_sy = jnp.maximum(sy, 0.5)
+        return 1.0 / safe_sy
+
+    def apply_anisotropic_scaling(self, offsets: Array, leader_vel: Array, sy: float) -> Array:
+        """
+        Apply anisotropic scaling to the formation offsets.
+        
+        Args:
+            offsets: [n_agents-1, 2] Formation offsets relative to leader
+            leader_vel: [2] Leader's velocity vector
+            sy: Scaling factor in y-direction
+            
+        Returns:
+            scaled_offsets: [n_agents-1, 2]
+        """
+        sx = self.compute_scaling_factor_x(sy)
+        
+        # 1. Calculate rotation angle based on leader's velocity
+        # If velocity is near zero, keep previous orientation or default to 0
+        v_norm = jnp.linalg.norm(leader_vel)
+        theta = jnp.where(
+            v_norm > 1e-6,
+            jnp.arctan2(leader_vel[1], leader_vel[0]),
+            0.0 # Default to 0 angle if stationary
+        )
+        
+        c, s = jnp.cos(theta), jnp.sin(theta)
+        R = jnp.array([[c, -s], [s, c]])
+        R_inv = jnp.array([[c, s], [-s, c]])
+        
+        # Scaling matrix S
+        S = jnp.array([[sx, 0.0], [0.0, sy]])
+        
+        # offsets shape: (N, 2)
+        # We want to treat each row as a point.
+        
+        # 1. Rotate back to align with x-axis
+        # p_aligned = R_inv @ p
+        # In batch: (R_inv @ offsets.T).T = offsets @ R_inv.T = offsets @ R
+        offsets_aligned = offsets @ R 
+        
+        # 2. Scale
+        # p_scaled_aligned = S @ p_aligned
+        # In batch: offsets_aligned @ S.T = offsets_aligned @ S
+        offsets_scaled_aligned = offsets_aligned @ S
+        
+        # 3. Rotate back
+        # p_final = R @ p_scaled_aligned
+        # In batch: offsets_scaled_aligned @ R.T = offsets_scaled_aligned @ R_inv
+        offsets_scaled = offsets_scaled_aligned @ R_inv
+        
+        return offsets_scaled
+
     def assign_formation_offsets(
         self, 
         leader_pos: Array, 
@@ -374,6 +459,38 @@ class DoubleIntegrator(MultiAgentEnv):
             if formation_offsets is not None:
                 leader_pos = next_agent_states[0, :2]  # リーダーの新しい位置
                 
+                # リーダーの速度ベクトルを取得
+                leader_vel = next_agent_states[0, 2:]
+
+                # 障害物との最小距離を計算（LiDARデータを使用）
+                # graph.type_states(type_idx=2) は障害物の特徴量だが、ここではLiDARデータが欲しい
+                # DoubleIntegrator.get_graph で lidar_data は agent_states, goal_states, lidar_data として結合されている
+                # しかし、ここでは next_agent_states しか持っていないため、簡易的に計算するか、
+                # 前のステップの graph から取得する。
+                # 正確には、現在のエージェント位置に対する障害物距離が必要。
+                # ここでは jax_vmap で簡易計算する。
+                get_lidar_vmap = jax_vmap(
+                    ft.partial(
+                        get_lidar,
+                        obstacles=graph.env_states.obstacle,
+                        num_beams=self._params["n_rays"],
+                        sense_range=self._params["comm_radius"],
+                    )
+                )
+                lidar_data = merge01(get_lidar_vmap(next_agent_states[:, :2]))
+                # lidar_data: [n_agents, n_rays] (normalized distance)
+                
+                # 正規化を戻して実距離に
+                real_lidar_dist = lidar_data * self._params["comm_radius"]
+                # エージェントごとの最小距離
+                min_dists = jnp.min(real_lidar_dist, axis=1)
+                # 全エージェントの中での最小距離（あるいはリーダー周辺？）
+                # 全体で協調するなら全体の最小を使うのが安全
+                min_obs_dist = jnp.min(min_dists)
+                
+                # スケーリング係数計算
+                sy = self.compute_scaling_factor_y(min_obs_dist)
+
                 if self._params.get("formation_flexible_assignment", False):
                     # 柔軟な割り当てモード（チャタリング対策付き）
                     follower_indices = jnp.arange(1, self.num_agents)
@@ -383,10 +500,26 @@ class DoubleIntegrator(MultiAgentEnv):
                     prev_assignment = graph.env_states.formation_assignment
                     prev_age = graph.env_states.formation_assignment_age
                     
+                    # スケーリングされたオフセットを計算（割り当て用には生のオフセットを使うべきか？
+                    # 割り当て計算時もターゲットがスケーリングされていた方が、近い場所を選べるはず）
+                    # しかし、assign_formation_offsets は生の formation_offsets を受け取る前提。
+                    # ここでは、assign_formation_offsets 内でターゲットを計算しているので、
+                    # scaling を反映させるには assign_formation_offsets を修正するか、
+                    # ここでスケーリング済みの offsets を渡す必要がある。
+                    # assign_formation_offsets は offsets を受け取り、
+                    # target_positions = leader_pos + formation_offsets とする。
+                    # なので、ここで formation_offsets をスケーリングして渡せば良い。
+                    
+                    # オフセット全体をスケーリング
+                    current_formation_offsets = jnp.array(formation_offsets) # [n_offsets, 2]
+                    scaled_formation_offsets = self.apply_anisotropic_scaling(
+                        current_formation_offsets, leader_vel, sy
+                    )
+
                     offset_indices, new_age = self.assign_formation_offsets(
                         leader_pos,
                         follower_positions,
-                        formation_offsets,
+                        scaled_formation_offsets, # Use scaled offsets
                         previous_assignment=prev_assignment,
                         assignment_age=prev_age,
                         cooldown_steps=self._params.get("formation_assignment_cooldown", 30),
@@ -396,14 +529,26 @@ class DoubleIntegrator(MultiAgentEnv):
                     formation_assignment_age = new_age
                     
                     # 割り当てられたオフセットに基づいてゴールを設定
+                    # scaled_formation_offsets を使う
                     for i in range(len(offset_indices)):
-                        offset = formation_offsets[offset_indices[i]]
+                        offset = scaled_formation_offsets[offset_indices[i]]
                         goal_states = goal_states.at[i + 1, :2].set(leader_pos + offset)
                 else:
                     # 既存の固定割り当てモード
-                    for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
-                        offset = jnp.array(formation_offsets[i-1])
-                        goal_states = goal_states.at[i, :2].set(leader_pos + offset)
+                    current_formation_offsets = jnp.array(formation_offsets) # [n_offsets, 2]
+                    # 有効なオフセットのみ抽出 (n_agents-1 個)
+                    n_followers = self.num_agents - 1
+                    active_offsets = current_formation_offsets[:n_followers]
+                    
+                    # スケーリング適用
+                    scaled_active_offsets = self.apply_anisotropic_scaling(
+                        active_offsets, leader_vel, sy
+                    )
+
+                    for i in range(n_followers):
+                        offset = scaled_active_offsets[i]
+                        # i is 0-indexed for followers, so agent index is i+1
+                        goal_states = goal_states.at[i + 1, :2].set(leader_pos + offset)
             
             # リーダーの速度をフォロワーの目標速度として設定
             leader_vel = next_agent_states[0, 2:]
