@@ -463,12 +463,7 @@ class DoubleIntegrator(MultiAgentEnv):
                 leader_vel = next_agent_states[0, 2:]
 
                 # 障害物との最小距離を計算（LiDARデータを使用）
-                # graph.type_states(type_idx=2) は障害物の特徴量だが、ここではLiDARデータが欲しい
-                # DoubleIntegrator.get_graph で lidar_data は agent_states, goal_states, lidar_data として結合されている
-                # しかし、ここでは next_agent_states しか持っていないため、簡易的に計算するか、
-                # 前のステップの graph から取得する。
-                # 正確には、現在のエージェント位置に対する障害物距離が必要。
-                # ここでは jax_vmap で簡易計算する。
+                # 障害物との最小距離を計算（LiDARデータを使用）
                 get_lidar_vmap = jax_vmap(
                     ft.partial(
                         get_lidar,
