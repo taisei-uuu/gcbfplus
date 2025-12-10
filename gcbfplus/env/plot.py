@@ -17,7 +17,7 @@ from typing import List, Optional, Union
 from ..trainer.utils import centered_norm
 from ..utils.typing import EdgeIndex, Pos2d, Pos3d, Array
 from ..utils.utils import merge01, tree_index, MutablePatchCollection, save_anim
-from .obstacle import Cuboid, Sphere, Obstacle, Rectangle
+from .obstacle import Cuboid, Sphere, Obstacle, Rectangle, Circle
 from .base import RolloutResult
 
 
@@ -181,6 +181,11 @@ def get_obs_collection(
         obs_col = get_cuboid_collection(obstacles, alpha=alpha, facecolor=color)
     elif isinstance(obstacles, Sphere):
         obs_col = get_sphere_collection(obstacles, alpha=alpha, facecolor=color)
+    elif isinstance(obstacles, Circle):
+        n_obs = len(obstacles.center)
+        obs_circles = [plt.Circle((float(obstacles.center[ii, 0]), float(obstacles.center[ii, 1])),
+                                  radius=float(obstacles.radius[ii])) for ii in range(n_obs)]
+        obs_col = PatchCollection(obs_circles, color=color, alpha=alpha, zorder=99)
     else:
         raise NotImplementedError
     return obs_col
