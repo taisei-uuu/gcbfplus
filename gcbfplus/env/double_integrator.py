@@ -11,7 +11,7 @@ from ..utils.graph import EdgeBlock, GetGraph, GraphsTuple
 from ..utils.typing import Action, AgentState, Array, Cost, Done, Info, Reward, State
 from ..utils.utils import merge01, jax_vmap
 from .base import MultiAgentEnv, RolloutResult
-from .obstacle import Obstacle, Rectangle
+from .obstacle import Obstacle, Rectangle, Circle
 from .plot import render_video
 from .utils import get_lidar, inside_obstacles, lqr, get_node_goal_rng
 
@@ -86,6 +86,7 @@ class DoubleIntegrator(MultiAgentEnv):
         self._R = np.eye(self.action_dim)
         self._K = jnp.array(lqr(self._A, self._B, self._Q, self._R))
         self.create_obstacles = jax_vmap(Rectangle.create)
+        self.create_circle_obstacles = jax_vmap(Circle.create)
 
     def _get_formation_radius(self) -> float:
         """
@@ -143,10 +144,17 @@ class DoubleIntegrator(MultiAgentEnv):
             # obs_conf is expected to be a list of dicts or a structured object, 
             # here we assume simple array structure for easy JAX handling or pre-processed dict
             # user-provided dict: {"pos": [[x,y], ...], "len": [[w,h], ...], "theta": [t, ...]}
+            # OR {"type": "circle", "pos": [[x,y], ...], "radius": [r, ...]}
+            obs_type = obs_conf.get("type", "rectangle")
             obs_pos = jnp.array(obs_conf["pos"])
-            obs_len = jnp.array(obs_conf["len"])
-            obs_theta = jnp.array(obs_conf["theta"])
-            obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
+            
+            if obs_type == "circle":
+                obs_radius = jnp.array(obs_conf["radius"])
+                obstacles = self.create_circle_obstacles(obs_pos, obs_radius)
+            else:
+                obs_len = jnp.array(obs_conf["len"])
+                obs_theta = jnp.array(obs_conf["theta"])
+                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
             
             # Agents
             agent_conf = fixed_config["agents"]

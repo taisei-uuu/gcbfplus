@@ -9,6 +9,7 @@ from ..utils.typing import Array, ObsType, ObsWidth, ObsHeight, ObsTheta, Radius
 RECTANGLE = jnp.zeros(1)
 CUBOID = jnp.ones(1)
 SPHERE = jnp.ones(1) * 2
+CIRCLE = jnp.ones(1) * 3
 
 
 class Obstacle(Protocol):
@@ -268,3 +269,55 @@ class Sphere(NamedTuple):
         alphas = jnp.clip(alphas, 0, 1)
         alphas = valid1 * alphas + (1 - valid1) * 1e6
         return alphas
+
+
+class Circle(NamedTuple):
+    type: ObsType
+    center: Pos2d
+    radius: Radius
+
+    @staticmethod
+    def create(center: Pos2d, radius: Radius) -> "Circle":
+        return Circle(CIRCLE, center, radius)
+
+    def inside(self, point: Pos2d, r: Radius = 0.) -> BoolScalar:
+        return jnp.linalg.norm(point - self.center) <= self.radius + r
+
+    def raytracing(self, start: Pos2d, end: Pos2d) -> Array:
+        x1, y1 = start[0], start[1]
+        x2, y2 = end[0], end[1]
+        xc, yc = self.center[0], self.center[1]
+        r = self.radius
+
+        '''
+        # solve the equation
+        # x = x1 + alpha * (x2 - x1) = xc + r * cos(theta)
+        # y = y1 + alpha * (y2 - y1) = yc + r * sin(theta)
+        # equivalent to solve
+        # (x1-xc + alpha(x2-x1))^2 + (y1-yc + alpha(y2-y1))^2 = r^2
+        # A alpha^2 + B alpha + C = 0
+        '''
+        lidar_rmax = jnp.linalg.norm(end - start)
+        A = lidar_rmax ** 2  # (x2-x1)^2+(y2-y1)^2
+        B = 2 * ((x2 - x1) * (x1 - xc) + (y2 - y1) * (y1 - yc))
+        C = (x1 - xc) ** 2 + (y1 - yc) ** 2 - r ** 2
+
+        delta = B ** 2 - 4 * A * C
+        valid1 = delta >= 0
+
+        alpha1 = (-B - jnp.sqrt(delta * valid1)) / (2 * A) * valid1 + (1 - valid1)
+        alpha2 = (-B + jnp.sqrt(delta * valid1)) / (2 * A) * valid1 + (1 - valid1)
+        # We want the smallest positive alpha.
+        # Since the ray starts outside or on boundary, we usually look for the first intersection.
+        # If inside, alpha could be negative? No, we usually assume start is outside for LiDAR? 
+        # But if inside, we want the exit point? Or 0? 
+        # Usually LiDAR returns distance to first hit.
+        
+        # Taking similar logic to Sphere:
+        alpha1_tilde = (alpha1 >= 0) * alpha1 + (alpha1 < 0) * 1 # if negative, set to 1 (max range)
+        alpha2_tilde = (alpha2 >= 0) * alpha2 + (alpha2 < 0) * 1
+        alphas = jnp.minimum(alpha1_tilde, alpha2_tilde)
+        alphas = jnp.clip(alphas, 0, 1)
+        alphas = valid1 * alphas + (1 - valid1) * 1e6
+        return alphas
+
