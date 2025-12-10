@@ -334,19 +334,14 @@ class DoubleIntegrator(MultiAgentEnv):
         # In batch: (R_inv @ offsets.T).T = offsets @ R_inv.T = offsets @ R
         offsets_aligned = offsets @ R 
         
-        # 2. Shear
-        # p_sheared = H @ p_aligned   (col vector notation)
-        # In batch (row vectors): offsets_sheared = offsets_aligned @ H
-        offsets_sheared = offsets_aligned @ H
+        # 2. Scale
+        # p_scaled_aligned = S @ p_aligned
+        # In batch: offsets_aligned @ S.T = offsets_aligned @ S
+        offsets_scaled_aligned = offsets_aligned @ S
         
-        # 3. Scale
-        # p_scaled = S @ p_sheared
-        # In batch: offsets_scaled_aligned = offsets_sheared @ S
-        offsets_scaled_aligned = offsets_sheared @ S
-        
-        # 4. Rotate back
-        # p_final = R @ p_scaled
-        # In batch: offsets_scaled = offsets_scaled_aligned @ R_inv
+        # 3. Rotate back
+        # p_final = R @ p_scaled_aligned
+        # In batch: offsets_scaled_aligned @ R.T = offsets_scaled_aligned @ R_inv
         offsets_scaled = offsets_scaled_aligned @ R_inv
         
         return offsets_scaled
@@ -488,6 +483,15 @@ class DoubleIntegrator(MultiAgentEnv):
 
                 # 障害物との最小距離を計算（LiDARデータを使用）
                 # 障害物との最小距離を計算（LiDARデータを使用）
+                # 障害物との最小距離を計算（LiDARデータを使用）
+                # 【修正: チャタリング防止】
+                # 全員の情報を使うと「縮む→安全→伸びる→危険」のループ（チャタリング）が起きるため、
+                # 「リーダー（隊列中心）の観測値」のみを基準にスケーリングを決定する。
+                # これにより、フォロワーの位置変化によるフィードバック干渉を防ぐ。
+                
+                # リーダーのステートのみ抽出
+                leader_state = next_agent_states[0:1, :2] # [1, 2]
+                
                 get_lidar_vmap = jax_vmap(
                     ft.partial(
                         get_lidar,
@@ -496,16 +500,14 @@ class DoubleIntegrator(MultiAgentEnv):
                         sense_range=self._params["comm_radius"],
                     )
                 )
-                lidar_data = merge01(get_lidar_vmap(next_agent_states[:, :2]))
-                # lidar_data: [n_agents, n_rays] (normalized distance)
+                # リーダーのみのLiDARデータ取得
+                leader_lidar_data = merge01(get_lidar_vmap(leader_state)) # [1, n_rays]
                 
                 # 正規化を戻して実距離に
-                real_lidar_dist = lidar_data * self._params["comm_radius"]
-                # エージェントごとの最小距離
-                min_dists = jnp.min(real_lidar_dist, axis=1)
-                # 全エージェントの中での最小距離（あるいはリーダー周辺？）
-                # 全体で協調するなら全体の最小を使うのが安全
-                min_obs_dist = jnp.min(min_dists)
+                real_lidar_dist = leader_lidar_data * self._params["comm_radius"]
+                
+                # リーダー周囲の最小距離
+                min_obs_dist = jnp.min(real_lidar_dist)
                 
                 # スケーリング係数計算
                 sy = self.compute_scaling_factor_y(min_obs_dist)
