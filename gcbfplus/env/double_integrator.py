@@ -28,7 +28,10 @@ class DoubleIntegrator(MultiAgentEnv):
         # フォーメーション割り当ての状態
         formation_assignment: Optional[Array] = None  # 現在の割り当て [n_followers]
         formation_assignment_age: Optional[Array] = None  # 割り当ての経過ステップ数 [n_followers]
-
+        # Smoothing States
+        smoothed_sy: Optional[float] = 1.0
+        smoothed_leader_vel: Optional[Array] = None # [2]
+        
         @property
         def n_agent(self) -> int:
             return self.agent.shape[0]
@@ -55,8 +58,10 @@ class DoubleIntegrator(MultiAgentEnv):
         # Anisotropic Scaling Parameters
         "s_min": 0.3,         # Minimum scaling factor (y-direction)
         "d_critical": 0.3,    # Distance where scaling starts
-        "d_free": 0.5,        # Distance where scaling ends (Updated to match comm_radius)
+        "d_free": 0.45,       # Distance where scaling ends (Should be < comm_radius)
         "c_shear": 0.5,       # Shear coefficient (Keep < |x|/|y| to avoid leader collision)
+        "alpha_sy": 0.1,      # Smoothing factor for scaling (0 < alpha <= 1). Lower = Smoother.
+        "alpha_v": 0.1,       # Smoothing factor for leader velocity (for rotation)
     }
 
     def __init__(
@@ -183,11 +188,18 @@ class DoubleIntegrator(MultiAgentEnv):
         #フォーメーションモードの場合
         formation_assignment = None
         formation_assignment_age = None
+        smoothed_sy = jnp.array(1.0)
+        smoothed_leader_vel = jnp.zeros(2)
+
         if self._params.get("formation_mode", False):
             formation_offsets = self._params["formation_offsets"]
             if formation_offsets is not None:
                 leader_pos = states[0, :2]  # リーダーの位置 [x, y]
                 
+                # 初期状態なのでリーダーの速度は0だが、
+                # もし初期方向があればそれを設定するなどの処理が必要かも。
+                # ここではゼロ初期化。
+
                 if self._params.get("formation_flexible_assignment", False):
                     # 柔軟な割り当てモード: 初期割り当てを計算
                     follower_positions = states[1:, :2]
@@ -213,7 +225,11 @@ class DoubleIntegrator(MultiAgentEnv):
                         offset = jnp.array(formation_offsets[i-1])
                         goals = goals.at[i, :2].set(leader_pos + offset)
 
-        env_states = self.EnvState(states, goals, obstacles, formation_assignment, formation_assignment_age)
+        env_states = self.EnvState(
+            states, goals, obstacles, 
+            formation_assignment, formation_assignment_age,
+            smoothed_sy, smoothed_leader_vel
+        )
 
         return self.get_graph(env_states)
 
@@ -315,12 +331,9 @@ class DoubleIntegrator(MultiAgentEnv):
         # When sy=1.0 (no scale), k=0. When sy=s_min, k is max.
         k = c_shear * (1.0 - sy)
         
-        # Direction of shear:
-        # We want to shear "outwards" or "staggered".
-        # Simple x = x + ky means:
-        # y>0 (left follower) -> x increases (moves forward)
-        # y<0 (right follower) -> x decreases (moves backward)
-        # This creates a stagger.
+        # HMatrix: [[1, k], [0, 1]] for p @ H.T?
+        # p_new = p @ H
+        # [x_new, y_new] = [x, y] @ [[1, 0], [k, 1]] = [x + ky, y]
         H = jnp.array([[1.0, 0.0], [k, 1.0]])
         
         # Scaling matrix S
@@ -334,12 +347,27 @@ class DoubleIntegrator(MultiAgentEnv):
         # In batch: (R_inv @ offsets.T).T = offsets @ R_inv.T = offsets @ R
         offsets_aligned = offsets @ R 
         
-        # 2. Scale
-        # p_scaled_aligned = S @ p_aligned
-        # In batch: offsets_aligned @ S.T = offsets_aligned @ S
-        offsets_scaled_aligned = offsets_aligned @ S
+        # 2. Shear (Apply H)
+        # We want to stagger based on Y position.
+        # p_sheared = p_aligned @ H
+        offsets_sheared = offsets_aligned @ H
+
+        # 3. Scale
+        # p_scaled = S @ p_sheared ??
+        # Or p_scaled = p_sheared @ S ?
+        # Usually calculate scale first then shear? Or shear then scale?
+        # If we shear first: x += ky. Then scale x by sx, y by sy.
+        # x_final = (x + ky) * sx = x*sx + k*y*sx
+        # y_final = y * sy
+        # If we scale first: x *= sx, y *= sy. Then shear:
+        # x_final = x*sx + k*(y*sy)
+        # The result depends on if k depends on sy (it does).
+        # Let's do: Align -> Shear -> Scale -> Restore Rotation
         
-        # 3. Rotate back
+        # p_scaled_aligned = offsets_sheared @ S
+        offsets_scaled_aligned = offsets_sheared @ S
+        
+        # 4. Rotate back
         # p_final = R @ p_scaled_aligned
         # In batch: offsets_scaled_aligned @ R.T = offsets_scaled_aligned @ R_inv
         offsets_scaled = offsets_scaled_aligned @ R_inv
@@ -473,6 +501,10 @@ class DoubleIntegrator(MultiAgentEnv):
         # フォーメーションモードの場合、フォロワーのゴールを更新
         formation_assignment = None
         formation_assignment_age = None
+        # Retrieve previous smoothed states
+        smoothed_sy = graph.env_states.smoothed_sy
+        smoothed_leader_vel = graph.env_states.smoothed_leader_vel
+        
         if self._params.get("formation_mode", False):
             formation_offsets = self._params["formation_offsets"]
             if formation_offsets is not None:
@@ -482,12 +514,8 @@ class DoubleIntegrator(MultiAgentEnv):
                 leader_vel = next_agent_states[0, 2:]
 
                 # 障害物との最小距離を計算（LiDARデータを使用）
-                # 障害物との最小距離を計算（LiDARデータを使用）
-                # 障害物との最小距離を計算（LiDARデータを使用）
-                # 【修正: チャタリング防止】
                 # 全員の情報を使うと「縮む→安全→伸びる→危険」のループ（チャタリング）が起きるため、
                 # 「リーダー（隊列中心）の観測値」のみを基準にスケーリングを決定する。
-                # これにより、フォロワーの位置変化によるフィードバック干渉を防ぐ。
                 
                 # リーダーのステートのみ抽出
                 leader_state = next_agent_states[0:1, :2] # [1, 2]
@@ -501,16 +529,33 @@ class DoubleIntegrator(MultiAgentEnv):
                     )
                 )
                 # リーダーのみのLiDARデータ取得
-                leader_lidar_data = merge01(get_lidar_vmap(leader_state)) # [1, n_rays]
+                # leader_lidar_data contains absolute coordinates of hit points [n_rays, 2]
+                leader_lidar_data = merge01(get_lidar_vmap(leader_state)) 
                 
-                # 正規化を戻して実距離に
-                real_lidar_dist = leader_lidar_data * self._params["comm_radius"]
+                # Calculate Euclidean distance from leader to hit points
+                # previous code incorrectly assumed leader_lidar_data was normalized distance
+                diffs = leader_lidar_data - leader_pos
+                dists = jnp.linalg.norm(diffs, axis=-1)
                 
                 # リーダー周囲の最小距離
-                min_obs_dist = jnp.min(real_lidar_dist)
+                min_obs_dist = jnp.min(dists)
                 
-                # スケーリング係数計算
-                sy = self.compute_scaling_factor_y(min_obs_dist)
+                # スケーリング係数計算 (Raw)
+                target_sy = self.compute_scaling_factor_y(min_obs_dist)
+                
+                # Apply Smoothing to sy (Low-pass filter)
+                alpha_sy = self._params.get("alpha_sy", 0.1)
+                # If first step (smoothed_sy is None or scalar), handle it. 
+                # Already initialized in reset to 1.0 array or scalar.
+                smoothed_sy = alpha_sy * target_sy + (1.0 - alpha_sy) * smoothed_sy
+                
+                # Apply Smoothing to leader_vel (Low-pass filter)
+                alpha_v = self._params.get("alpha_v", 0.1)
+                smoothed_leader_vel = alpha_v * leader_vel + (1.0 - alpha_v) * smoothed_leader_vel
+
+                # Use smoothed values for calculation
+                sy = smoothed_sy
+                ref_vel = smoothed_leader_vel
 
                 if self._params.get("formation_flexible_assignment", False):
                     # 柔軟な割り当てモード（チャタリング対策付き）
@@ -521,21 +566,14 @@ class DoubleIntegrator(MultiAgentEnv):
                     prev_assignment = graph.env_states.formation_assignment
                     prev_age = graph.env_states.formation_assignment_age
                     
-                    # スケーリングされたオフセットを計算（割り当て用には生のオフセットを使うべきか？
-                    # 割り当て計算時もターゲットがスケーリングされていた方が、近い場所を選べるはず）
-                    # しかし、assign_formation_offsets は生の formation_offsets を受け取る前提。
-                    # ここでは、assign_formation_offsets 内でターゲットを計算しているので、
-                    # scaling を反映させるには assign_formation_offsets を修正するか、
-                    # ここでスケーリング済みの offsets を渡す必要がある。
-                    # assign_formation_offsets は offsets を受け取り、
-                    # target_positions = leader_pos + formation_offsets とする。
-                    # なので、ここで formation_offsets をスケーリングして渡せば良い。
-                    
                     # オフセット全体をスケーリング
                     current_formation_offsets = jnp.array(formation_offsets) # [n_offsets, 2]
                     scaled_formation_offsets = self.apply_anisotropic_scaling(
-                        current_formation_offsets, leader_vel, sy
+                        current_formation_offsets, ref_vel, sy
                     )
+                    
+                    # Note: assign_formation_offsets uses linear distance. 
+                    # If we pass scaled offsets, it matches followers to the squeezed grid.
 
                     offset_indices, new_age = self.assign_formation_offsets(
                         leader_pos,
@@ -563,7 +601,7 @@ class DoubleIntegrator(MultiAgentEnv):
                     
                     # スケーリング適用
                     scaled_active_offsets = self.apply_anisotropic_scaling(
-                        active_offsets, leader_vel, sy
+                        active_offsets, ref_vel, sy
                     )
 
                     for i in range(n_followers):
@@ -593,6 +631,8 @@ class DoubleIntegrator(MultiAgentEnv):
             obstacles,
             formation_assignment,
             formation_assignment_age,
+            smoothed_sy,
+            smoothed_leader_vel
         )
 
         info = {}
