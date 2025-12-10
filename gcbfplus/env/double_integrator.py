@@ -53,9 +53,10 @@ class DoubleIntegrator(MultiAgentEnv):
         "kp_bs": 1.0,  # Backstepping position gain
         "kv_bs": 2.0,  # Backstepping velocity gain
         # Anisotropic Scaling Parameters
-        "s_min": 0.7,         # Minimum scaling factor (y-direction)
-        "d_critical": 1.2,    # Distance where scaling starts
-        "d_free": 2.4,        # Distance where scaling ends
+        "s_min": 0.3,         # Minimum scaling factor (y-direction)
+        "d_critical": 0.3,    # Distance where scaling starts
+        "d_free": 0.5,        # Distance where scaling ends (Updated to match comm_radius)
+        "c_shear": 0.5,       # Shear coefficient (Keep < |x|/|y| to avoid leader collision)
     }
 
     def __init__(
@@ -304,6 +305,24 @@ class DoubleIntegrator(MultiAgentEnv):
         R = jnp.array([[c, -s], [s, c]])
         R_inv = jnp.array([[c, s], [-s, c]])
         
+        # Shear Matrix H
+        # x' = x + k*y
+        # y' = y
+        # Matrix form for row vector p=[x, y]: p @ H
+        # [x, y] @ [[1, 0], [k, 1]] = [x + ky, y]
+        c_shear = self._params.get("c_shear", 0.0)
+        # Shear strength proportional to scaling intensity (1.0 - sy)
+        # When sy=1.0 (no scale), k=0. When sy=s_min, k is max.
+        k = c_shear * (1.0 - sy)
+        
+        # Direction of shear:
+        # We want to shear "outwards" or "staggered".
+        # Simple x = x + ky means:
+        # y>0 (left follower) -> x increases (moves forward)
+        # y<0 (right follower) -> x decreases (moves backward)
+        # This creates a stagger.
+        H = jnp.array([[1.0, 0.0], [k, 1.0]])
+        
         # Scaling matrix S
         S = jnp.array([[sx, 0.0], [0.0, sy]])
         
@@ -315,14 +334,19 @@ class DoubleIntegrator(MultiAgentEnv):
         # In batch: (R_inv @ offsets.T).T = offsets @ R_inv.T = offsets @ R
         offsets_aligned = offsets @ R 
         
-        # 2. Scale
-        # p_scaled_aligned = S @ p_aligned
-        # In batch: offsets_aligned @ S.T = offsets_aligned @ S
-        offsets_scaled_aligned = offsets_aligned @ S
+        # 2. Shear
+        # p_sheared = H @ p_aligned   (col vector notation)
+        # In batch (row vectors): offsets_sheared = offsets_aligned @ H
+        offsets_sheared = offsets_aligned @ H
         
-        # 3. Rotate back
-        # p_final = R @ p_scaled_aligned
-        # In batch: offsets_scaled_aligned @ R.T = offsets_scaled_aligned @ R_inv
+        # 3. Scale
+        # p_scaled = S @ p_sheared
+        # In batch: offsets_scaled_aligned = offsets_sheared @ S
+        offsets_scaled_aligned = offsets_sheared @ S
+        
+        # 4. Rotate back
+        # p_final = R @ p_scaled
+        # In batch: offsets_scaled = offsets_scaled_aligned @ R_inv
         offsets_scaled = offsets_scaled_aligned @ R_inv
         
         return offsets_scaled
