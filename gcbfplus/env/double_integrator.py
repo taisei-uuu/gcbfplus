@@ -913,9 +913,10 @@ class DoubleIntegrator(MultiAgentEnv):
             nom = nominal_targets[i]
             
             # exclude self from others
-            # simple mask
+            # Use jnp.roll to shift self to index 0, then slice [1:] to get others
+            # This maintains static shape (N-1, 2)
             idx_in_all = i + 1
-            others = jnp.concatenate([all_pos[:idx_in_all], all_pos[idx_in_all+1:]], axis=0)
+            others = jnp.roll(all_pos, -idx_in_all, axis=0)[1:]
             
             adj_pos = self._compute_apf_force_field(curr, nom, others, obstacles)
             return adj_pos
