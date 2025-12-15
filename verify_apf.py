@@ -6,17 +6,25 @@ from gcbfplus.env.obstacle import Rectangle
 
 def test_apf_integration():
     print("\n=== Test 1: APF Integration in Environment Step ===")
-    # Params
+    # Params - Using defaults from source, NOT overriding APF values
     params = DoubleIntegrator.PARAMS.copy()
     params.update({
         "formation_mode": True,
         "formation_offsets": [[-0.5, 0.5], [-0.5, -0.5]], # Two followers
-        "apf_enabled": True,
-        "apf_att_gain": 1.0,
-        "apf_rep_obs_gain": 1.0,
-        "apf_vortex_gain": 0.5,
-        "apf_obs_dist": 1.0,
+        # Removed explicit APF overrides - will now use defaults from source file!
     })
+    
+    # Diagnostic: Print actual APF parameters being used
+    print("--- APF Parameters in use ---")
+    print(f"  apf_enabled:        {params.get('apf_enabled')}")
+    print(f"  apf_att_gain:       {params.get('apf_att_gain')}")
+    print(f"  apf_rep_obs_gain:   {params.get('apf_rep_obs_gain')}")
+    print(f"  apf_rep_agent_gain: {params.get('apf_rep_agent_gain')}")
+    print(f"  apf_vortex_gain:    {params.get('apf_vortex_gain')}")
+    print(f"  apf_obs_dist:       {params.get('apf_obs_dist')}")
+    print(f"  apf_agent_dist:     {params.get('apf_agent_dist')}")
+    print(f"  apf_dt:             {params.get('apf_dt')}")
+    print("-----------------------------")
     
     env = DoubleIntegrator(num_agents=3, area_size=10.0, params=params)
     
