@@ -56,6 +56,7 @@ class DoubleIntegrator(MultiAgentEnv):
         "apf_att_gain": 1.0,
         "apf_rep_obs_gain": 0.5,
         "apf_rep_agent_gain": 0.5,
+        "apf_vortex_gain": 0.2, # Vortex force gain
         "apf_obs_dist": 0.5,
         "apf_agent_dist": 0.5,
         "apf_dt": 0.03,
@@ -852,6 +853,38 @@ class DoubleIntegrator(MultiAgentEnv):
         )
         
         f_rep_obs = jnp.sum(dirs * rep_mag[:, None], axis=0)
+
+        # 2a. Vortex Force (Tangential Repulsion)
+        # Push along the obstacle boundary towards the target
+        # Tangent directions: [-dir_y, dir_x] and [dir_y, -dir_x]
+        # dirs is normalized vector P_agent - P_obs.
+        # Tangent T1 = Rot(90) * dir
+        tangents = jnp.stack([-dirs[:, 1], dirs[:, 0]], axis=1) # [n_rays, 2]
+        
+        # Determine which tangent direction is closer to the target direction
+        # Target direction wrt agent
+        target_vec = nominal_target - current_pos # [2]
+        # We want tangent that has positive dot product with target_vec
+        # But we need to be careful: the wall might be between us and target.
+        # Simply projecting target_vec onto tangent line works for convex obstacles.
+        
+        # Dot product with tangents
+        # shape: [n_rays]
+        proj = jnp.dot(tangents, target_vec)
+        
+        # If proj > 0, T1 is good. If proj < 0, -T1 is good.
+        # sign(proj) * T1
+        best_tangent_dirs = tangents * jnp.sign(proj)[:, None]
+        
+        # Strength: similar to repulsion, but maybe weaker?
+        # Let's use same distance decay as repulsion
+        vortex_mag = jnp.where(
+            valid_hits,
+            params.get("apf_vortex_gain", 0.0) * (1.0 / norms - 1.0 / sense_range)**2,
+            0.0
+        )
+        
+        f_vortex = jnp.sum(best_tangent_dirs * vortex_mag[:, None], axis=0)
         
         # 3. Repulsive Force from Other Agents
         # diff = current - other
@@ -872,7 +905,7 @@ class DoubleIntegrator(MultiAgentEnv):
         f_rep_agent = jnp.sum(dirs_agents * rep_mag_agents[:, None], axis=0)
         
         # Total Force
-        f_total = f_att + f_rep_obs + f_rep_agent
+        f_total = f_att + f_rep_obs + f_rep_agent + f_vortex
         
         # New Target (Step in force direction)
         # Limit the step size to avoid instability

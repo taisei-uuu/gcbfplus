@@ -12,6 +12,7 @@ def test_apf():
         "apf_enabled": True,
         "apf_att_gain": 1.0,
         "apf_rep_obs_gain": 1.0,
+        "apf_vortex_gain": 0.5,
         "apf_obs_dist": 1.0,
     })
     
