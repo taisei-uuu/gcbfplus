@@ -51,6 +51,14 @@ class DoubleIntegrator(MultiAgentEnv):
         "fixed_config": None,  # 固定シナリオ設定
         "kp_bs": 1.0,  # Backstepping position gain
         "kv_bs": 2.0,  # Backstepping velocity gain
+        # APF Parameters
+        "apf_enabled": True,
+        "apf_att_gain": 1.0,
+        "apf_rep_obs_gain": 0.5,
+        "apf_rep_agent_gain": 0.5,
+        "apf_obs_dist": 0.5,
+        "apf_agent_dist": 0.5,
+        "apf_dt": 0.03,
     }
 
     def __init__(
@@ -374,6 +382,9 @@ class DoubleIntegrator(MultiAgentEnv):
             if formation_offsets is not None:
                 leader_pos = next_agent_states[0, :2]  # リーダーの新しい位置
                 
+                # Convert to array for easier indexing
+                formation_offsets_arr = jnp.array(formation_offsets)
+                
                 if self._params.get("formation_flexible_assignment", False):
                     # 柔軟な割り当てモード（チャタリング対策付き）
                     follower_indices = jnp.arange(1, self.num_agents)
@@ -386,7 +397,7 @@ class DoubleIntegrator(MultiAgentEnv):
                     offset_indices, new_age = self.assign_formation_offsets(
                         leader_pos,
                         follower_positions,
-                        formation_offsets,
+                        formation_offsets_arr,
                         previous_assignment=prev_assignment,
                         assignment_age=prev_age,
                         cooldown_steps=self._params.get("formation_assignment_cooldown", 30),
@@ -395,15 +406,35 @@ class DoubleIntegrator(MultiAgentEnv):
                     formation_assignment = offset_indices
                     formation_assignment_age = new_age
                     
-                    # 割り当てられたオフセットに基づいてゴールを設定
-                    for i in range(len(offset_indices)):
-                        offset = formation_offsets[offset_indices[i]]
-                        goal_states = goal_states.at[i + 1, :2].set(leader_pos + offset)
+                    assigned_offsets = formation_offsets_arr[offset_indices]
                 else:
                     # 既存の固定割り当てモード
-                    for i in range(1, min(len(formation_offsets) + 1, self.num_agents)):
-                        offset = jnp.array(formation_offsets[i-1])
-                        goal_states = goal_states.at[i, :2].set(leader_pos + offset)
+                    n_needed = self.num_agents - 1
+                    # Ensure we have enough offsets, or clip
+                    n_avail = formation_offsets_arr.shape[0]
+                    n_use = min(n_needed, n_avail)
+                    assigned_offsets = formation_offsets_arr[:n_use]
+                    
+                    # If offsets are fewer than agents, we simply don't update goals for extra agents (or default to something?)
+                    # Original code loop: min(len + 1, num_agents)
+                    # So it only updates for available offsets.
+                    # We need to pad or slice goal update.
+
+                # Calculate Target Positions
+                # Handle cases where assigned_offsets might be smaller than num_followers if config is wrong
+                n_targets = assigned_offsets.shape[0]
+                
+                if n_targets > 0:
+                    target_followers_pos = next_agent_states[1:1+n_targets, :2]
+                    
+                    if self._params.get("apf_enabled", False):
+                        target_pos = self._apply_apf_adjustment(
+                            leader_pos, target_followers_pos, assigned_offsets, obstacles
+                        )
+                    else:
+                        target_pos = leader_pos + assigned_offsets
+
+                    goal_states = goal_states.at[1:1+n_targets, :2].set(target_pos)
             
             # リーダーの速度をフォロワーの目標速度として設定
             leader_vel = next_agent_states[0, 2:]
@@ -754,3 +785,142 @@ class DoubleIntegrator(MultiAgentEnv):
         goal_pos = graph.env_states.goal[:, :2]
         reach = jnp.linalg.norm(agent_pos - goal_pos, axis=1) < self._params["car_radius"] * 2
         return reach
+
+    def _compute_apf_force_field(
+        self,
+        current_pos: jnp.ndarray,
+        nominal_target: jnp.ndarray,
+        other_agents_pos: jnp.ndarray,
+        obstacles: Obstacle,
+    ) -> jnp.ndarray:
+        """
+        Computes the target position based on Artificial Potential Fields.
+        
+        Args:
+            current_pos: Current position of the agent [2]
+            nominal_target: Nominal target position (leader + offset) [2]
+            other_agents_pos: Positions of other agents [N-1, 2]
+            obstacles: Obstacles object
+            
+        Returns:
+            adjusted_target: The adjusted target position [2]
+        """
+        params = self._params
+        
+        # 1. Attractive Force (towards nominal target)
+        # F_att = k_att * (p_nom - p_cur)
+        f_att = params.get("apf_att_gain", 1.0) * (nominal_target - current_pos)
+        
+        # 2. Repulsive Force from Obstacles
+        # Use simple lidar-based repulsion
+        n_rays = 32
+        sense_range = params.get("apf_obs_dist", 1.0)
+        
+        # Compute lidar locally for this agent
+        # Note: get_lidar takes (obstacles, num_beams, sense_range) for vmap, 
+        # but here we use it for single point. 
+        # However, get_lidar in utils uses `start_point[None, :].repeat(...)` so it expects single point input?
+        # Let's check utils.get_lidar signature. 
+        # def get_lidar(start_point: Pos, obstacles: Obstacle, num_beams: int, sense_range: float, max_returns: int = 32):
+        # inputs start_point: (2,) or (3,)
+        
+        lidar_points = get_lidar(current_pos, obstacles, n_rays, sense_range)
+        # lidar_points: [n_rays, 2]
+        
+        # Check valid hits (if not hit, it returns point at max range? No, raytracing returns hit point)
+        # We need distances
+        dists = jnp.linalg.norm(lidar_points - current_pos, axis=1)
+        # Filter Max Range Hits (approximate check)
+        # raytracing returns start + (end-start)*alpha. If alpha=1e6 (no hit), point is far.
+        # But utils.raytracing: "alphas = valids * alphas + (1 - valids) * 1e6"
+        # So no hit -> very large distance.
+        valid_hits = dists < (sense_range - 1e-3)
+        
+        # Force direction: away from hit point
+        # diff = current - hit
+        diffs = current_pos - lidar_points 
+        # Normalize
+        norms = dists + 1e-6
+        dirs = diffs / norms[:, None]
+        
+        # Magnitude: k_rep * (1/d - 1/d0)^2
+        # Standard APF repulsion
+        rep_mag = jnp.where(
+            valid_hits,
+            params.get("apf_rep_obs_gain", 0.5) * (1.0 / norms - 1.0 / sense_range)**2,
+            0.0
+        )
+        
+        f_rep_obs = jnp.sum(dirs * rep_mag[:, None], axis=0)
+        
+        # 3. Repulsive Force from Other Agents
+        # diff = current - other
+        diffs_agents = current_pos - other_agents_pos
+        dists_agents = jnp.linalg.norm(diffs_agents, axis=1)
+        
+        agent_sense_range = params.get("apf_agent_dist", 0.5)
+        valid_agents = jnp.logical_and(dists_agents < agent_sense_range, dists_agents > 1e-4) # exclude self if passed
+        
+        dirs_agents = diffs_agents / (dists_agents[:, None] + 1e-6)
+        
+        rep_mag_agents = jnp.where(
+            valid_agents,
+            params.get("apf_rep_agent_gain", 0.5) * (1.0 / dists_agents - 1.0 / agent_sense_range)**2,
+            0.0
+        )
+        
+        f_rep_agent = jnp.sum(dirs_agents * rep_mag_agents[:, None], axis=0)
+        
+        # Total Force
+        f_total = f_att + f_rep_obs + f_rep_agent
+        
+        # New Target (Step in force direction)
+        # Limit the step size to avoid instability
+        # p_new = p_cur + f_total * dt
+        # Treating f_total as velocity vector for the "virtual target"
+        dt_apf = params.get("apf_dt", 0.03) 
+        
+        # The prompt asks for "adjusted new target offset". 
+        # We interpret this as: GCBF tracks this new point.
+        adjusted_pos = current_pos + f_total * dt_apf
+        
+        return adjusted_pos
+
+    def _apply_apf_adjustment(
+        self,
+        leader_pos: jnp.ndarray,
+        follower_positions: jnp.ndarray,
+        nominal_offsets: jnp.ndarray,
+        obstacles: Obstacle,
+    ) -> jnp.ndarray:
+        """
+        Vectorized application of APF to all followers.
+        """
+        n_followers = follower_positions.shape[0]
+        
+        # nominal targets
+        nominal_targets = leader_pos + nominal_offsets
+        
+        # For each follower, other agents are all other followers + leader?
+        # "other agents" usually implies everyone else.
+        # Construct full state for indexing
+        all_pos = jnp.concatenate([leader_pos[None, :], follower_positions], axis=0)
+        
+        def compute_single(i, carry):
+            # i is index in follower_positions (0 to n-1)
+            # corresponding index in all_pos is i+1
+            curr = follower_positions[i]
+            nom = nominal_targets[i]
+            
+            # exclude self from others
+            # simple mask
+            idx_in_all = i + 1
+            others = jnp.concatenate([all_pos[:idx_in_all], all_pos[idx_in_all+1:]], axis=0)
+            
+            adj_pos = self._compute_apf_force_field(curr, nom, others, obstacles)
+            return adj_pos
+            
+        # Vmap over followers
+        adjusted_targets = jax.vmap(compute_single)(jnp.arange(n_followers), None)
+        
+        return adjusted_targets
