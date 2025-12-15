@@ -5,14 +5,15 @@ from gcbfplus.env.double_integrator import DoubleIntegrator
 
 def test_apf():
     # Params
-    params = {
+    params = DoubleIntegrator.PARAMS.copy()
+    params.update({
         "formation_mode": True,
         "formation_offsets": [[-0.5, 0.5], [-0.5, -0.5]], # Two followers
         "apf_enabled": True,
         "apf_att_gain": 1.0,
         "apf_rep_obs_gain": 1.0,
         "apf_obs_dist": 1.0,
-    }
+    })
     
     env = DoubleIntegrator(num_agents=3, area_size=10.0, params=params)
     
