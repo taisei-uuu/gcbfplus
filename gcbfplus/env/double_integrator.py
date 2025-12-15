@@ -53,13 +53,12 @@ class DoubleIntegrator(MultiAgentEnv):
         "kv_bs": 2.0,  # Backstepping velocity gain
         # APF Parameters
         "apf_enabled": True,
-        "apf_att_gain": 1.0,
-        "apf_rep_obs_gain": 0.5,
-        "apf_rep_agent_gain": 0.5,
-        "apf_vortex_gain": 0.2, # Vortex force gain
-        "apf_obs_dist": 0.5,
-        "apf_agent_dist": 0.5,
-        "apf_dt": 0.03,
+        "apf_rep_obs_gain": 0.3,    # Strength of repulsion from obstacles
+        "apf_rep_agent_gain": 0.3,  # Strength of agent avoidance
+        "apf_vortex_gain": 0.2,     # Strength of tangential (vortex) force
+        "apf_obs_dist": 0.5,        # Sensing range for obstacles (meters)
+        "apf_agent_dist": 0.3,      # Sensing range for other agents
+        "apf_max_adjustment": 0.3,  # Max offset adjustment magnitude (meters)
     }
 
     def __init__(
@@ -808,11 +807,10 @@ class DoubleIntegrator(MultiAgentEnv):
         """
         params = self._params
         
-        # 1. Attractive Force (towards nominal target)
-        # F_att = k_att * (p_nom - p_cur)
-        f_att = params.get("apf_att_gain", 1.0) * (nominal_target - current_pos)
+        # APF Forces will be calculated relative to obstacles/agents sensed from CURRENT position,
+        # but applied as an adjustment to the NOMINAL TARGET.
         
-        # 2. Repulsive Force from Obstacles
+        # 1. Repulsive Force from Obstacles (sensed from agent's current position)
         # Use simple lidar-based repulsion
         n_rays = 32
         sense_range = params.get("apf_obs_dist", 1.0)
@@ -886,7 +884,7 @@ class DoubleIntegrator(MultiAgentEnv):
         
         f_vortex = jnp.sum(best_tangent_dirs * vortex_mag[:, None], axis=0)
         
-        # 3. Repulsive Force from Other Agents
+        # 2. Repulsive Force from Other Agents
         # diff = current - other
         diffs_agents = current_pos - other_agents_pos
         dists_agents = jnp.linalg.norm(diffs_agents, axis=1)
@@ -904,18 +902,24 @@ class DoubleIntegrator(MultiAgentEnv):
         
         f_rep_agent = jnp.sum(dirs_agents * rep_mag_agents[:, None], axis=0)
         
-        # Total Force
-        f_total = f_att + f_rep_obs + f_rep_agent + f_vortex
+        # Total Force (Repulsion + Vortex only, attraction handled separately)
+        # The repulsion and vortex should push the TARGET away from obstacles,
+        # not the agent. So we apply these adjustments to nominal_target.
+        f_adjustment = f_rep_obs + f_rep_agent + f_vortex
         
-        # New Target (Step in force direction)
-        # Limit the step size to avoid instability
-        # p_new = p_cur + f_total * dt
-        # Treating f_total as velocity vector for the "virtual target"
-        dt_apf = params.get("apf_dt", 0.03) 
+        # Scale the adjustment
+        # Note: We don't use dt here. The gains directly control the magnitude.
+        # We can optionally limit the max adjustment to prevent wild jumps.
+        max_adjustment = params.get("apf_max_adjustment", 0.5)
+        adjustment_norm = jnp.linalg.norm(f_adjustment)
+        f_adjustment = jnp.where(
+            adjustment_norm > max_adjustment,
+            f_adjustment * (max_adjustment / (adjustment_norm + 1e-6)),
+            f_adjustment
+        )
         
-        # The prompt asks for "adjusted new target offset". 
-        # We interpret this as: GCBF tracks this new point.
-        adjusted_pos = current_pos + f_total * dt_apf
+        # The adjusted target is the nominal formation position + safety adjustment
+        adjusted_pos = nominal_target + f_adjustment
         
         return adjusted_pos
 
