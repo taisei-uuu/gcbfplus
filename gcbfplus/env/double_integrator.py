@@ -50,7 +50,9 @@ class DoubleIntegrator(MultiAgentEnv):
         "formation_min_distance": 0.1,  # フォーメーション達成とみなす最小距離
         "formation_assignment_cooldown": 30,  # 割り当て変更のクールダウン期間（ステップ数）
         "formation_assignment_min_diff": 0.05,  # 再割り当てを検討する最小距離差
+        "formation_assignment_min_diff": 0.05,  # 再割り当てを検討する最小距離差
         "fixed_config": None,  # 固定シナリオ設定
+        "spawn_offsets": None, # relative spawn offsets from leader
         "kp_bs": 1.0,  # Backstepping position gain
         "kv_bs": 2.0,  # Backstepping velocity gain
         # APF Parameters
@@ -180,6 +182,26 @@ class DoubleIntegrator(MultiAgentEnv):
                 formation_spawn_min=self._params.get("formation_spawn_min", 0.4),
                 formation_spawn_max=self._params.get("formation_spawn_max", 0.8),
             )
+
+            # Apply spawn_offsets if provided
+            spawn_offsets = self._params.get("spawn_offsets")
+            if spawn_offsets is not None:
+                # spawn_offsets is expected to be a list of lists or array: [[x1, y1], [x2, y2], ...]
+                # corresponding to agent 1, 2, ... (followers)
+                offsets = jnp.array(spawn_offsets)
+                n_offsets = offsets.shape[0]
+                n_apply = min(n_offsets, self.num_agents - 1)
+                
+                if n_apply > 0:
+                    leader_pos = states[0, :2]
+                    target_pos = leader_pos + offsets[:n_apply]
+                    # Clip to area boundaries
+                    target_pos = jnp.clip(target_pos, 0, self.area_size)
+                    
+                    # Update states for followers
+                    # We need to construct the update for slicing
+                    # states is (num_agents, 2)
+                    states = states.at[1:1+n_apply, :2].set(target_pos)
 
         # add zero velocity
         states = jnp.concatenate([states, jnp.zeros((self.num_agents, 2))], axis=1)

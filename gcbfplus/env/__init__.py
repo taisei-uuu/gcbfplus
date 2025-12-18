@@ -33,7 +33,8 @@ def make_env(
         formation_mode: bool = False,  # 追加
         formation_offsets: Optional[list] = None,  # 追加
         formation_flexible_assignment: bool = False,  # 追加
-        fixed_config: Optional[dict] = None  # 追加
+        fixed_config: Optional[dict] = None,  # 追加
+        spawn_offsets: Optional[list] = None  # 追加
 ) -> MultiAgentEnv:
     assert env_id in ENV.keys(), f'Environment {env_id} not implemented.'
     params = ENV[env_id].PARAMS.copy()
@@ -61,6 +62,9 @@ def make_env(
     if fixed_config is not None:
         params["fixed_config"] = fixed_config
         
+    if spawn_offsets is not None:
+        params["spawn_offsets"] = jnp.array(spawn_offsets)
+
     return ENV[env_id](
         num_agents=num_agents,
         area_size=area_size,

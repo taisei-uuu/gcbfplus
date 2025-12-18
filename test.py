@@ -55,6 +55,12 @@ def test(args):
         import json
         fixed_config = json.loads(args.fixed_config)
     
+    # spawn_offsetsのパース
+    spawn_offsets = None
+    if args.spawn_offsets:
+        import json
+        spawn_offsets = json.loads(args.spawn_offsets)
+
     env = make_env(
         env_id=config.env if args.env is None else args.env,
         num_agents=num_agents,
@@ -65,7 +71,8 @@ def test(args):
         formation_mode=args.formation_mode,  # 追加
         formation_offsets=formation_offsets, # 追加
         formation_flexible_assignment=args.formation_flexible_assignment,  # 追加
-        fixed_config=fixed_config # 追加
+        fixed_config=fixed_config, # 追加
+        spawn_offsets=spawn_offsets # 追加
     )
 
     if not args.u_ref:
@@ -308,6 +315,12 @@ def main():
         type=str,
         default=None,
         help="Fixed scenario configuration as JSON string"
+    )
+    parser.add_argument(
+        "--spawn-offsets",
+        type=str,
+        default=None,
+        help="Relative spawn offsets from leader as JSON string, e.g., '[[0.5,0],[-0.5,0]]'"
     )
 
     args = parser.parse_args()

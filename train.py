@@ -33,6 +33,12 @@ def train(args):
         import json
         formation_offsets = json.loads(args.formation_offsets)
 
+    # spawn_offsetsのパース
+    spawn_offsets = None
+    if args.spawn_offsets:
+        import json
+        spawn_offsets = json.loads(args.spawn_offsets)
+
     # create environments
     env = make_env(
         env_id=args.env,
@@ -42,7 +48,8 @@ def train(args):
         area_size=args.area_size,
         formation_mode=args.formation_mode,  # 追加
         formation_offsets=formation_offsets,  # 追加
-        formation_flexible_assignment=args.formation_flexible_assignment  # 追加
+        formation_flexible_assignment=args.formation_flexible_assignment,  # 追加
+        spawn_offsets=spawn_offsets  # 追加
     )
     env_test = make_env(
         env_id=args.env,
@@ -52,7 +59,8 @@ def train(args):
         area_size=args.area_size,
         formation_mode=args.formation_mode,  # 追加
         formation_offsets=formation_offsets,  # 追加
-        formation_flexible_assignment=args.formation_flexible_assignment  # 追加
+        formation_flexible_assignment=args.formation_flexible_assignment,  # 追加
+        spawn_offsets=spawn_offsets  # 追加
     )
 
     # create low level controller
@@ -180,6 +188,12 @@ def main():
     action="store_true",
     default=False,
     help="Enable flexible formation assignment (P1 feature)"
+    )
+    parser.add_argument(
+        "--spawn-offsets",
+        type=str,
+        default=None,
+        help="Relative spawn offsets from leader as JSON string, e.g., '[[0.5,0],[-0.5,0]]'"
     )
 
     args = parser.parse_args()
