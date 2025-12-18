@@ -140,7 +140,8 @@ def get_node_goal_rng(
         min_dist: float,
         max_travel: float = None,
         formation_mode: bool = False, # フォーメーションモードかどうかのフラグ
-        formation_start_radius: float = 1.0, # リーダーの周囲に配置する半径
+        formation_spawn_min: float = 0.4, # Min spawn distance from leader
+        formation_spawn_max: float = 0.8, # Max spawn distance from leader
 ) -> [Pos, Pos]:
     max_iter = 1024  # maximum number of iterations to find a valid initial state/goal
     states = jnp.zeros((n, dim))
@@ -165,8 +166,8 @@ def get_node_goal_rng(
         # リーダー位置中心の球体内にランダムな点を生成
         random_direction = jr.normal(use_key, (dim,))
         random_direction /= jnp.linalg.norm(random_direction)
-        # Margin to avoid collision check
-        random_radius = jr.uniform(use_key, minval=min_dist * 1.1, maxval=formation_start_radius)
+        # Use configurable spawn range
+        random_radius = jr.uniform(use_key, minval=formation_spawn_min, maxval=formation_spawn_max)
         
         follower_pos = leader_pos + random_direction * random_radius
         
@@ -234,8 +235,8 @@ def get_node_goal_rng(
         leader_pos = all_states[0]
         random_direction = jr.normal(local_key, (dim,))
         random_direction /= jnp.linalg.norm(random_direction)
-        # Margin to avoid 'dist <= min_dist' collision check floating point issues
-        random_radius = jr.uniform(local_key, minval=min_dist * 1.1, maxval=formation_start_radius)
+        # Use configurable spawn range
+        random_radius = jr.uniform(local_key, minval=formation_spawn_min, maxval=formation_spawn_max)
         agent_candidate_local = leader_pos + random_direction * random_radius
         agent_candidate_local = jnp.clip(agent_candidate_local, 0, side_length)
 

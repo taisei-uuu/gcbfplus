@@ -252,6 +252,7 @@ def test(args):
             video_name += f"_cbf{args.cbf}"
             viz_opts["cbf"] = [*cbf, args.cbf]
 
+        viz_opts["plot_path"] = not args.no_plot_path
         video_path = videos_dir / f"{stamp_str}_{video_name}.mp4"
         env.render_video(rollout, video_path, Ta_is_unsafe, viz_opts, dpi=args.dpi)
 
@@ -281,6 +282,7 @@ def main():
     parser.add_argument("--nojit-rollout", action="store_true", default=False)
     parser.add_argument("--log", action="store_true", default=False)
     parser.add_argument("--dpi", type=int, default=100)
+    parser.add_argument("--no-plot-path", action="store_true", default=False)
 
     # フォーメーション関連の引数追加
     parser.add_argument(

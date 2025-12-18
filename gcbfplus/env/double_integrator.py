@@ -44,6 +44,8 @@ class DoubleIntegrator(MultiAgentEnv):
         "m": 0.1,  # mass
         "formation_mode": False, #フォーメーションモード
         "formation_offsets": None, #フォーメーションオフセット
+        "formation_spawn_min": 0.4,  # Min spawn distance from leader (meters)
+        "formation_spawn_max": 0.8,  # Max spawn distance from leader (meters)
         "formation_flexible_assignment": False,  # 柔軟な割り当てを有効化
         "formation_min_distance": 0.1,  # フォーメーション達成とみなす最小距離
         "formation_assignment_cooldown": 30,  # 割り当て変更のクールダウン期間（ステップ数）
@@ -175,7 +177,8 @@ class DoubleIntegrator(MultiAgentEnv):
                 key, self.area_size, 2, obstacles, self.num_agents, 4 * self.params["car_radius"], self.max_travel,
                 # 初期位置を限定
                 formation_mode=self._params.get("formation_mode", False),
-                formation_start_radius=self._get_formation_radius() 
+                formation_spawn_min=self._params.get("formation_spawn_min", 0.4),
+                formation_spawn_max=self._params.get("formation_spawn_max", 0.8),
             )
 
         # add zero velocity

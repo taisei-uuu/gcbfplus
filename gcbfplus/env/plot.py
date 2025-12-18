@@ -310,6 +310,20 @@ def render_video(
             pos2d = proj3d.proj_transform(n_pos[ii, 0], n_pos[ii, 1], n_pos[ii, 2], ax.get_proj())[:2]
             agent_labels.append(ax.text2D(pos2d[0], pos2d[1], f"{ii}", **label_font_opts))
 
+    # plot path
+    plot_path = viz_opts.get("plot_path", False)
+    path_cols = []
+    if plot_path:
+        for ii in range(n_agent):
+            if dim == 2:
+                # Use LineCollection or just plot? LineCollection is faster for updating but plt.plot is easier for single lines that grow
+                # Let's use plt.plot (Line2D) for simplicity as we just set data
+                line, = ax.plot([], [], color=n_color[ii], linewidth=1.0, alpha=0.5, zorder=2)
+                path_cols.append(line)
+            else:
+                line, = ax.plot([], [], [], color=n_color[ii], linewidth=1.0, alpha=0.5, zorder=2)
+                path_cols.append(line)
+
     # plot cbf
     cnt_col = []
     if "cbf" in viz_opts:
@@ -338,7 +352,7 @@ def render_video(
 
     # init function for animation
     def init_fn() -> list[plt.Artist]:
-        return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col, kk_text]
+        return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col, kk_text, *path_cols]
 
     # update function for animation
     def update(kk: int) -> list[plt.Artist]:
@@ -376,6 +390,22 @@ def render_video(
                 text_pos = proj3d.proj_transform(n_pos_t[ii, 0], n_pos_t[ii, 1], n_pos_t[ii, 2], ax.get_proj())[:2]
                 agent_labels[ii].set_position(text_pos)
 
+        # update paths
+        if plot_path:
+            # We need trajectory up to kk.
+            # T_graph.states has shape (T, N_all_nodes, dim)
+            # Agents are 0 to n_agent-1
+            # We need to slice current time
+            # For efficiency we could pre-slice or just slice here
+            past_states = T_graph.states[:kk + 1, :n_agent, :dim] # (kk+1, n_agent, dim)
+            for ii in range(n_agent):
+                line = path_cols[ii]
+                if dim == 2:
+                    line.set_data(past_states[:, ii, 0], past_states[:, ii, 1])
+                else:
+                    line.set_data(past_states[:, ii, 0], past_states[:, ii, 1])
+                    line.set_3d_properties(past_states[:, ii, 2])
+
         # update cost and safe labels
         if kk < len(rollout.T_cost):
             cost_text.set_text("Cost: {:5.4f}, Reward: {:5.4f}".format(rollout.T_cost[kk], rollout.T_reward[kk]))
@@ -406,7 +436,7 @@ def render_video(
 
         kk_text.set_text("kk={:04}".format(kk))
 
-        return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col_t, kk_text]
+        return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col_t, kk_text, *path_cols]
 
     fps = 30.0
     spf = 1 / fps
