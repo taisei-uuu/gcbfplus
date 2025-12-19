@@ -41,6 +41,7 @@ class DoubleIntegrator(MultiAgentEnv):
         "comm_radius": 0.5,
         "n_rays": 32,
         "obs_len_range": [0.1, 0.5],
+        "obs_vel_range": [0.0, 0.0], # min, max speed
         "n_obs": 8,
         "m": 0.1,  # mass
         "formation_mode": False, #フォーメーションモード
@@ -150,6 +151,12 @@ class DoubleIntegrator(MultiAgentEnv):
             obs_conf = fixed_config["obstacles"]
             obs_pos = jnp.array(obs_conf["pos"])
             
+            # Velocity
+            if "velocity" in obs_conf:
+                obs_vel = jnp.array(obs_conf["velocity"])
+            else:
+                obs_vel = jnp.zeros_like(obs_pos)
+            
             if self._params.get("obstacle_type", "rectangle") == "circle":
                 # For circles, we expect "radius"
                 if "radius" in obs_conf:
@@ -161,12 +168,12 @@ class DoubleIntegrator(MultiAgentEnv):
                     # Default handling or error?
                     obs_radius = jnp.ones(obs_pos.shape[0]) * 0.2
                 
-                obstacles = self.create_obstacles(obs_pos, obs_radius)
+                obstacles = self.create_obstacles(obs_pos, obs_radius, obs_vel)
             else:
                 # Rectangle
                 obs_len = jnp.array(obs_conf["len"])
                 obs_theta = jnp.array(obs_conf["theta"])
-                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
+                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta, obs_vel)
             
             # Agents
             agent_conf = fixed_config["agents"]
@@ -183,6 +190,17 @@ class DoubleIntegrator(MultiAgentEnv):
             obstacle_key, key = jr.split(key, 2)
             obs_pos = jr.uniform(obstacle_key, (n_rng_obs, 2), minval=0, maxval=self.area_size)
             
+            # Velocity generation
+            speed_key, key = jr.split(key, 2)
+            obs_speed = jr.uniform(speed_key, (n_rng_obs,), 
+                                   minval=self._params["obs_vel_range"][0], 
+                                   maxval=self._params["obs_vel_range"][1])
+            dir_key, key = jr.split(key, 2)
+            obs_vel_dir = jr.normal(dir_key, (n_rng_obs, 2))
+            # avoid division by zero if norm is 0 (unlikely with normal)
+            obs_vel_dir = obs_vel_dir / (jnp.linalg.norm(obs_vel_dir, axis=1, keepdims=True) + 1e-6)
+            obs_vel = obs_vel_dir * obs_speed[:, None]
+
             if self._params.get("obstacle_type", "rectangle") == "circle":
                 radius_key, key = jr.split(key, 2)
                 # Use obs_len_range for radius range
@@ -192,7 +210,7 @@ class DoubleIntegrator(MultiAgentEnv):
                     minval=self._params["obs_len_range"][0],
                     maxval=self._params["obs_len_range"][1],
                 )
-                obstacles = self.create_obstacles(obs_pos, obs_radius)
+                obstacles = self.create_obstacles(obs_pos, obs_radius, obs_vel)
             else:
                 length_key, key = jr.split(key, 2)
                 obs_len = jr.uniform(
@@ -203,7 +221,7 @@ class DoubleIntegrator(MultiAgentEnv):
                 )
                 theta_key, key = jr.split(key, 2)
                 obs_theta = jr.uniform(theta_key, (n_rng_obs,), minval=0, maxval=2 * np.pi)
-                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
+                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta, obs_vel)
     
             # randomly generate agent and goal
             states, goals = get_node_goal_rng(

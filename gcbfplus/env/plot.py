@@ -234,7 +234,8 @@ def render_video(
 
     # plot obstacles
     obs = graph0.env_states.obstacle
-    ax.add_collection(get_obs_collection(obs, obs_color, alpha=0.8))
+    obs_col = get_obs_collection(obs, obs_color, alpha=0.8)
+    ax.add_collection(obs_col)
 
     # plot agents
     n_hits = n_agent * n_rays
@@ -356,7 +357,7 @@ def render_video(
 
     # init function for animation
     def init_fn() -> list[plt.Artist]:
-        return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col, kk_text, *path_cols]
+        return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col, kk_text, *path_cols, obs_col]
 
     # update function for animation
     def update(kk: int) -> list[plt.Artist]:
@@ -438,9 +439,23 @@ def render_video(
         else:
             cnt_col_t = []
 
+        # Update obstacles (since they might move)
+        nonlocal obs_col
+        if dim == 2:
+            obs_col.remove()
+            obs_t = graph.env_states.obstacle
+            obs_col = get_obs_collection(obs_t, obs_color, alpha=0.8)
+            ax.add_collection(obs_col)
+        else:
+             # 3D: Poly3DCollection
+            obs_col.remove()
+            obs_t = graph.env_states.obstacle
+            obs_col = get_obs_collection(obs_t, obs_color, alpha=0.8)
+            ax.add_collection(obs_col)
+
         kk_text.set_text("kk={:04}".format(kk))
 
-        return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col_t, kk_text, *path_cols]
+        return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col_t, kk_text, *path_cols, obs_col]
 
     fps = 30.0
     spf = 1 / fps

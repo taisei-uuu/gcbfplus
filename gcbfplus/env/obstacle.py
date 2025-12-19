@@ -15,11 +15,15 @@ CIRCLE = jnp.ones(1) * 3
 class Obstacle(Protocol):
     type: ObsType
     center: Pos
+    velocity: Array
 
     def inside(self, point: Pos, r: Radius = 0.) -> BoolScalar:
         pass
 
     def raytracing(self, start: Pos, end: Pos) -> Array:
+        pass
+
+    def step(self, dt: float) -> "Obstacle":
         pass
 
 
@@ -30,9 +34,10 @@ class Rectangle(NamedTuple):
     height: ObsHeight
     theta: ObsTheta
     points: Array
+    velocity: Pos2d
 
     @staticmethod
-    def create(center: Pos2d, width: ObsWidth, height: ObsHeight, theta: ObsTheta) -> "Rectangle":
+    def create(center: Pos2d, width: ObsWidth, height: ObsHeight, theta: ObsTheta, velocity: Pos2d = None) -> "Rectangle":
         bbox = jnp.array([
             [width / 2, height / 2],
             [-width / 2, height / 2],
@@ -49,7 +54,15 @@ class Rectangle(NamedTuple):
         points = jnp.dot(rot, bbox) + trans
         points = points.T
 
-        return Rectangle(RECTANGLE, center, width, height, theta, points)
+        if velocity is None:
+            velocity = jnp.zeros(2)
+
+        return Rectangle(RECTANGLE, center, width, height, theta, points, velocity)
+
+    def step(self, dt: float) -> "Rectangle":
+        new_center = self.center + self.velocity * dt
+        new_points = self.points + self.velocity * dt
+        return Rectangle(self.type, new_center, self.width, self.height, self.theta, new_points, self.velocity)
 
     def inside(self, point: Pos2d, r: Radius = 0.) -> BoolScalar:
         rel_x = point[0] - self.center[0]
@@ -105,10 +118,12 @@ class Cuboid(NamedTuple):
     height: ObsHeight
     rotation: Rotation
     points: Array
+    velocity: Pos3d
 
     @staticmethod
     def create(
-            center: Pos3d, length: ObsLength, width: ObsWidth, height: ObsHeight, quaternion: ObsQuaternion
+            center: Pos3d, length: ObsLength, width: ObsWidth, height: ObsHeight, quaternion: ObsQuaternion,
+            velocity: Pos3d = None
     ) -> "Cuboid":
         bbox = jnp.array([
             [-length / 2, -width / 2, -height / 2],
@@ -123,7 +138,14 @@ class Cuboid(NamedTuple):
 
         rotation = Rotation.from_quat(quaternion)
         points = rotation.apply(bbox) + center
-        return Cuboid(CUBOID, center, length, width, height, rotation, points)
+        if velocity is None:
+            velocity = jnp.zeros(3)
+        return Cuboid(CUBOID, center, length, width, height, rotation, points, velocity)
+
+    def step(self, dt: float) -> "Cuboid":
+        new_center = self.center + self.velocity * dt
+        new_points = self.points + self.velocity * dt
+        return Cuboid(self.type, new_center, self.length, self.width, self.height, self.rotation, new_points, self.velocity)
 
     def inside(self, point: Pos3d, r: Radius = 0.) -> BoolScalar:
         # transform the point to the cuboid frame
@@ -227,10 +249,17 @@ class Sphere(NamedTuple):
     type: ObsType
     center: Pos3d
     radius: Radius
+    velocity: Pos3d
 
     @staticmethod
-    def create(center: Pos3d, radius: Radius) -> "Sphere":
-        return Sphere(SPHERE, center, radius)
+    def create(center: Pos3d, radius: Radius, velocity: Pos3d = None) -> "Sphere":
+        if velocity is None:
+            velocity = jnp.zeros(3)
+        return Sphere(SPHERE, center, radius, velocity)
+
+    def step(self, dt: float) -> "Sphere":
+        new_center = self.center + self.velocity * dt
+        return Sphere(self.type, new_center, self.radius, self.velocity)
 
     def inside(self, point: Pos3d, r: Radius = 0.) -> BoolScalar:
         return jnp.linalg.norm(point - self.center) <= self.radius + r
@@ -275,10 +304,17 @@ class Circle(NamedTuple):
     type: ObsType
     center: Pos2d
     radius: Radius
+    velocity: Pos2d
 
     @staticmethod
-    def create(center: Pos2d, radius: Radius) -> "Circle":
-        return Circle(CIRCLE, center, radius)
+    def create(center: Pos2d, radius: Radius, velocity: Pos2d = None) -> "Circle":
+        if velocity is None:
+            velocity = jnp.zeros(2)
+        return Circle(CIRCLE, center, radius, velocity)
+
+    def step(self, dt: float) -> "Circle":
+        new_center = self.center + self.velocity * dt
+        return Circle(self.type, new_center, self.radius, self.velocity)
 
     def inside(self, point: Pos2d, r: Radius = 0.) -> BoolScalar:
         return jnp.linalg.norm(point - self.center) <= self.radius + r
