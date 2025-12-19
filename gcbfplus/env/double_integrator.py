@@ -62,7 +62,7 @@ class DoubleIntegrator(MultiAgentEnv):
         "apf_vortex_gain": 0.2,     # Strength of tangential (vortex) force
         "apf_obs_dist": 0.5,        # Sensing range for obstacles (meters)
         "apf_agent_dist": 0.3,      # Sensing range for other agents
-        "apf_max_adjustment": 0.3,  # Max offset adjustment magnitude (meters)
+        "apf_max_adjustment": 1.0,  # Max offset adjustment magnitude (meters)
     }
 
     def __init__(
@@ -823,7 +823,7 @@ class DoubleIntegrator(MultiAgentEnv):
         
         Args:
             current_pos: Current position of the agent [2]
-            nominal_target: Nominal target position (leader + offset) [2]
+            nominal_target: Nominal target position (leader) [2]
             other_agents_pos: Positions of other agents [N-1, 2]
             obstacles: Obstacles object
             
@@ -961,7 +961,9 @@ class DoubleIntegrator(MultiAgentEnv):
         n_followers = follower_positions.shape[0]
         
         # nominal targets
-        nominal_targets = leader_pos + nominal_offsets
+        # nominal_targets = leader_pos + nominal_offsets
+        # Modified as per request: use leader position only as nominal target (ignore offsets for APF goal)
+        nominal_targets = leader_pos + jnp.zeros_like(nominal_offsets)
         
         # For each follower, other agents are all other followers + leader?
         # "other agents" usually implies everyone else.
