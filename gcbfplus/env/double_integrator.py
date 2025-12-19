@@ -817,13 +817,14 @@ class DoubleIntegrator(MultiAgentEnv):
         nominal_target: jnp.ndarray,
         other_agents_pos: jnp.ndarray,
         obstacles: Obstacle,
+        vortex_reference: jnp.ndarray = None,
     ) -> jnp.ndarray:
         """
         Computes the target position based on Artificial Potential Fields.
         
         Args:
             current_pos: Current position of the agent [2]
-            nominal_target: Nominal target position (leader) [2]
+            nominal_target: Nominal target position (leader + offset) [2]
             other_agents_pos: Positions of other agents [N-1, 2]
             obstacles: Obstacles object
             
@@ -886,7 +887,9 @@ class DoubleIntegrator(MultiAgentEnv):
         
         # Determine which tangent direction is closer to the target direction
         # Target direction wrt agent
-        target_vec = nominal_target - current_pos # [2]
+        # Use vortex_reference (e.g. leader position) if provided, otherwise nominal_target
+        ref_target = vortex_reference if vortex_reference is not None else nominal_target
+        target_vec = ref_target - current_pos # [2]
         # We want tangent that has positive dot product with target_vec
         # But we need to be careful: the wall might be between us and target.
         # Simply projecting target_vec onto tangent line works for convex obstacles.
@@ -961,9 +964,7 @@ class DoubleIntegrator(MultiAgentEnv):
         n_followers = follower_positions.shape[0]
         
         # nominal targets
-        # nominal_targets = leader_pos + nominal_offsets
-        # Modified as per request: use leader position only as nominal target (ignore offsets for APF goal)
-        nominal_targets = leader_pos + jnp.zeros_like(nominal_offsets)
+        nominal_targets = leader_pos + nominal_offsets
         
         # For each follower, other agents are all other followers + leader?
         # "other agents" usually implies everyone else.
@@ -982,7 +983,8 @@ class DoubleIntegrator(MultiAgentEnv):
             idx_in_all = i + 1
             others = jnp.roll(all_pos, -idx_in_all, axis=0)[1:]
             
-            adj_pos = self._compute_apf_force_field(curr, nom, others, obstacles)
+            # Pass leader_pos as the reference for vortex direction decision
+            adj_pos = self._compute_apf_force_field(curr, nom, others, obstacles, vortex_reference=leader_pos)
             return adj_pos
             
         # Vmap over followers
