@@ -529,7 +529,7 @@ class DoubleIntegrator(MultiAgentEnv):
         next_state = self.EnvState(
             next_agent_states,
             goal_states,
-            obstacles,
+            obstacles.step(self.dt),
             formation_assignment,
             formation_assignment_age,
         )
