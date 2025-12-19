@@ -72,7 +72,8 @@ def test(args):
         formation_offsets=formation_offsets, # 追加
         formation_flexible_assignment=args.formation_flexible_assignment,  # 追加
         fixed_config=fixed_config, # 追加
-        spawn_offsets=spawn_offsets # 追加
+        spawn_offsets=spawn_offsets, # 追加
+        obstacle_type=args.obstacle_type # 追加
     )
 
     if not args.u_ref:
@@ -321,6 +322,13 @@ def main():
         type=str,
         default=None,
         help="Relative spawn offsets from leader as JSON string, e.g., '[[0.5,0],[-0.5,0]]'"
+    )
+    parser.add_argument(
+        "--obstacle-type",
+        type=str,
+        default="rectangle",
+        choices=["rectangle", "circle"],
+        help="Type of obstacles to generate: 'rectangle' or 'circle'"
     )
 
     args = parser.parse_args()

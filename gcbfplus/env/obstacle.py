@@ -9,6 +9,7 @@ from ..utils.typing import Array, ObsType, ObsWidth, ObsHeight, ObsTheta, Radius
 RECTANGLE = jnp.zeros(1)
 CUBOID = jnp.ones(1)
 SPHERE = jnp.ones(1) * 2
+CIRCLE = jnp.ones(1) * 3
 
 
 class Obstacle(Protocol):
@@ -268,3 +269,43 @@ class Sphere(NamedTuple):
         alphas = jnp.clip(alphas, 0, 1)
         alphas = valid1 * alphas + (1 - valid1) * 1e6
         return alphas
+
+
+class Circle(NamedTuple):
+    type: ObsType
+    center: Pos2d
+    radius: Radius
+
+    @staticmethod
+    def create(center: Pos2d, radius: Radius) -> "Circle":
+        return Circle(CIRCLE, center, radius)
+
+    def inside(self, point: Pos2d, r: Radius = 0.) -> BoolScalar:
+        return jnp.linalg.norm(point - self.center) <= self.radius + r
+
+    def raytracing(self, start: Pos2d, end: Pos2d) -> Array:
+        D = end - start
+        F = start - self.center
+
+        A = jnp.dot(D, D)
+        B = 2 * jnp.dot(F, D)
+        C = jnp.dot(F, F) - self.radius ** 2
+
+        delta = B ** 2 - 4 * A * C
+
+        valid = (delta >= 0) & (A > 1e-6)
+
+        sqrt_delta = jnp.sqrt(jnp.maximum(delta, 0))
+
+        alpha1 = (-B - sqrt_delta) / (2 * A)
+        alpha2 = (-B + sqrt_delta) / (2 * A)
+
+        v1 = (alpha1 >= 0) & (alpha1 <= 1)
+        v2 = (alpha2 >= 0) & (alpha2 <= 1)
+
+        a1 = jnp.where(valid & v1, alpha1, 1e6)
+        a2 = jnp.where(valid & v2, alpha2, 1e6)
+
+        alpha = jnp.minimum(a1, a2)
+
+        return alpha

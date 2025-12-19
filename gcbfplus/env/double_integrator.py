@@ -11,7 +11,7 @@ from ..utils.graph import EdgeBlock, GetGraph, GraphsTuple
 from ..utils.typing import Action, AgentState, Array, Cost, Done, Info, Reward, State
 from ..utils.utils import merge01, jax_vmap
 from .base import MultiAgentEnv, RolloutResult
-from .obstacle import Obstacle, Rectangle
+from .obstacle import Obstacle, Rectangle, Circle
 from .plot import render_video
 from .utils import get_lidar, inside_obstacles, lqr, get_node_goal_rng
 
@@ -36,6 +36,7 @@ class DoubleIntegrator(MultiAgentEnv):
     EnvGraphsTuple = GraphsTuple[State, EnvState]
 
     PARAMS = {
+        "obstacle_type": "rectangle", # rectangle or circle
         "car_radius": 0.05,
         "comm_radius": 0.5,
         "n_rays": 32,
@@ -85,8 +86,14 @@ class DoubleIntegrator(MultiAgentEnv):
         )
         self._Q = np.eye(self.state_dim) * 5
         self._R = np.eye(self.action_dim)
+        self._Q = np.eye(self.state_dim) * 5
+        self._R = np.eye(self.action_dim)
         self._K = jnp.array(lqr(self._A, self._B, self._Q, self._R))
-        self.create_obstacles = jax_vmap(Rectangle.create)
+        
+        if self._params.get("obstacle_type", "rectangle") == "circle":
+            self.create_obstacles = jax_vmap(Circle.create)
+        else:
+            self.create_obstacles = jax_vmap(Rectangle.create)
 
     def _get_formation_radius(self) -> float:
         """
@@ -141,13 +148,25 @@ class DoubleIntegrator(MultiAgentEnv):
             # --- 固定設定を使用 ---
             # Obstacles
             obs_conf = fixed_config["obstacles"]
-            # obs_conf is expected to be a list of dicts or a structured object, 
-            # here we assume simple array structure for easy JAX handling or pre-processed dict
-            # user-provided dict: {"pos": [[x,y], ...], "len": [[w,h], ...], "theta": [t, ...]}
             obs_pos = jnp.array(obs_conf["pos"])
-            obs_len = jnp.array(obs_conf["len"])
-            obs_theta = jnp.array(obs_conf["theta"])
-            obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
+            
+            if self._params.get("obstacle_type", "rectangle") == "circle":
+                # For circles, we expect "radius"
+                if "radius" in obs_conf:
+                    obs_radius = jnp.array(obs_conf["radius"])
+                elif "len" in obs_conf:
+                    # Fallback or reuse len?
+                     obs_radius = jnp.array(obs_conf["len"])[:, 0]
+                else:
+                    # Default handling or error?
+                    obs_radius = jnp.ones(obs_pos.shape[0]) * 0.2
+                
+                obstacles = self.create_obstacles(obs_pos, obs_radius)
+            else:
+                # Rectangle
+                obs_len = jnp.array(obs_conf["len"])
+                obs_theta = jnp.array(obs_conf["theta"])
+                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
             
             # Agents
             agent_conf = fixed_config["agents"]
@@ -163,16 +182,28 @@ class DoubleIntegrator(MultiAgentEnv):
             assert n_rng_obs >= 0
             obstacle_key, key = jr.split(key, 2)
             obs_pos = jr.uniform(obstacle_key, (n_rng_obs, 2), minval=0, maxval=self.area_size)
-            length_key, key = jr.split(key, 2)
-            obs_len = jr.uniform(
-                length_key,
-                (n_rng_obs, 2),
-                minval=self._params["obs_len_range"][0],
-                maxval=self._params["obs_len_range"][1],
-            )
-            theta_key, key = jr.split(key, 2)
-            obs_theta = jr.uniform(theta_key, (n_rng_obs,), minval=0, maxval=2 * np.pi)
-            obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
+            
+            if self._params.get("obstacle_type", "rectangle") == "circle":
+                radius_key, key = jr.split(key, 2)
+                # Use obs_len_range for radius range
+                obs_radius = jr.uniform(
+                    radius_key,
+                    (n_rng_obs,),
+                    minval=self._params["obs_len_range"][0],
+                    maxval=self._params["obs_len_range"][1],
+                )
+                obstacles = self.create_obstacles(obs_pos, obs_radius)
+            else:
+                length_key, key = jr.split(key, 2)
+                obs_len = jr.uniform(
+                    length_key,
+                    (n_rng_obs, 2),
+                    minval=self._params["obs_len_range"][0],
+                    maxval=self._params["obs_len_range"][1],
+                )
+                theta_key, key = jr.split(key, 2)
+                obs_theta = jr.uniform(theta_key, (n_rng_obs,), minval=0, maxval=2 * np.pi)
+                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta)
     
             # randomly generate agent and goal
             states, goals = get_node_goal_rng(
