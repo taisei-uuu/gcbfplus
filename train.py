@@ -49,7 +49,8 @@ def train(args):
         formation_mode=args.formation_mode,  # 追加
         formation_offsets=formation_offsets,  # 追加
         formation_flexible_assignment=args.formation_flexible_assignment,  # 追加
-        spawn_offsets=spawn_offsets  # 追加
+        spawn_offsets=spawn_offsets,  # 追加
+        obs_vel=args.obs_vel  # 追加
     )
     env_test = make_env(
         env_id=args.env,
@@ -60,7 +61,8 @@ def train(args):
         formation_mode=args.formation_mode,  # 追加
         formation_offsets=formation_offsets,  # 追加
         formation_flexible_assignment=args.formation_flexible_assignment,  # 追加
-        spawn_offsets=spawn_offsets  # 追加
+        spawn_offsets=spawn_offsets,  # 追加
+        obs_vel=args.obs_vel  # 追加
     )
 
     # create low level controller
@@ -149,6 +151,7 @@ def main():
     parser.add_argument("--obs", type=int, default=None)
     parser.add_argument("--n-rays", type=int, default=32)
     parser.add_argument("--area-size", type=float, required=True)
+    parser.add_argument("--obs-vel", type=float, default=0.0, help="Maximum velocity for obstacles")
 
     # gcbf / gcbf+ arguments
     parser.add_argument("--gnn-layers", type=int, default=1)
