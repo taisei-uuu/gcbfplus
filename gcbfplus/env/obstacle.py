@@ -61,7 +61,10 @@ class Rectangle(NamedTuple):
 
     def step(self, dt: float) -> "Rectangle":
         new_center = self.center + self.velocity * dt
-        new_points = self.points + self.velocity * dt
+        # Expand velocity to match points shape (..., 4, 2)
+        # self.velocity is (..., 2), we need (..., 1, 2)
+        v_expanded = jnp.expand_dims(self.velocity, -2)
+        new_points = self.points + v_expanded * dt
         return Rectangle(self.type, new_center, self.width, self.height, self.theta, new_points, self.velocity)
 
     def inside(self, point: Pos2d, r: Radius = 0.) -> BoolScalar:
@@ -144,7 +147,10 @@ class Cuboid(NamedTuple):
 
     def step(self, dt: float) -> "Cuboid":
         new_center = self.center + self.velocity * dt
-        new_points = self.points + self.velocity * dt
+        # Expand velocity to match points shape (..., 8, 3)
+        # self.velocity is (..., 3), we need (..., 1, 3)
+        v_expanded = jnp.expand_dims(self.velocity, -2)
+        new_points = self.points + v_expanded * dt
         return Cuboid(self.type, new_center, self.length, self.width, self.height, self.rotation, new_points, self.velocity)
 
     def inside(self, point: Pos3d, r: Radius = 0.) -> BoolScalar:
