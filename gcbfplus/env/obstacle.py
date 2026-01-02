@@ -384,9 +384,6 @@ class MixedObstacle(NamedTuple):
         width: float = 0.0, 
         height: float = 0.0, 
         theta: float = 0.0, 
-        width: float = 0.0, 
-        height: float = 0.0, 
-        theta: float = 0.0, 
         radius: float = 0.0,
         inspection_target: bool = False
     ) -> "MixedObstacle":
