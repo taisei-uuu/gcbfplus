@@ -32,9 +32,10 @@ def test_inspection_target():
             }
         ],
         "agents": {
-            # Agent 0 start inside Inspection Target
-            # Agent 1 start inside Inspection Target (Collision!)
-            "start": [[0.0, 0.0], [0.0, 0.0]], 
+            # Agent 0 start inside Inspection Target (Safe)
+            # Agent 1 start inside Inspection Target (Unsafe)
+            # Offset them to avoid agent-agent collision
+            "start": [[-0.2, 0.0], [0.2, 0.0]], 
             "goal": [[1.0, 1.0], [3.0, 3.0]]
         }
     }
