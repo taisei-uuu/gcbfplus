@@ -99,6 +99,26 @@ class DoubleIntegrator(MultiAgentEnv):
         # Preprocess fixed_config if it contains a list of obstacles
         self._preprocess_config()
 
+    def _mask_obstacles_for_agent(self, obstacles: MixedObstacle, agent_idx: int) -> MixedObstacle:
+        """
+        Agent 0 ignores obstacles marked as 'inspection_target'.
+        We achieve this by moving them to infinity for Agent 0.
+        """
+        if agent_idx != 0:
+            return obstacles
+        
+        # Check if inspection_target exists (it should if MixedObstacle)
+        # However, checking attribute existence in JIT might be tricky if type varies, 
+        # but we use MixedObstacle everywhere now.
+        if not hasattr(obstacles, "inspection_target"):
+            return obstacles
+            
+        mask = obstacles.inspection_target
+        # Move inspection targets to a safe place (infinity)
+        new_center = jnp.where(mask[:, None], jnp.array([1e6, 1e6]), obstacles.center)
+        
+        return obstacles._replace(center=new_center)
+
     def _preprocess_config(self):
         fixed_config = self._params.get("fixed_config", None)
         if fixed_config is None:
@@ -118,6 +138,7 @@ class DoubleIntegrator(MultiAgentEnv):
             height = []
             theta = []
             radius = []
+            inspection_target = []
 
             for obs in obs_conf:
                 # Position
@@ -161,6 +182,9 @@ class DoubleIntegrator(MultiAgentEnv):
                     height.append(h)
                     theta.append(obs.get("theta", obs.get("angle", 0.0)))
             
+            # Inspection Target
+            inspection_target.append(obs.get("inspection_target", False))
+            
             # Replace the list with SoA dict
             new_obs_conf = {
                 "pos": obs_conf, # Keep original for debug? No, replace.
@@ -172,6 +196,7 @@ class DoubleIntegrator(MultiAgentEnv):
                 "gen_height": np.array(height),
                 "gen_theta": np.array(theta),
                 "gen_radius": np.array(radius),
+                "gen_inspection": np.array(inspection_target),
                 "is_mixed": True
             }
             # Remove "pos" key likely expected by old code?
@@ -245,9 +270,10 @@ class DoubleIntegrator(MultiAgentEnv):
                 obs_height = jnp.array(obs_conf["gen_height"])
                 obs_theta = jnp.array(obs_conf["gen_theta"])
                 obs_radius = jnp.array(obs_conf["gen_radius"])
+                obs_inspection = jnp.array(obs_conf["gen_inspection"])
                 
                 obstacles = self.create_obstacles(
-                    obs_pos, obs_vel, obs_shape, obs_width, obs_height, obs_theta, obs_radius
+                    obs_pos, obs_vel, obs_shape, obs_width, obs_height, obs_theta, obs_radius, obs_inspection
                 )
             else:
                 # Backward compatibility for old SoA format
@@ -681,9 +707,18 @@ class DoubleIntegrator(MultiAgentEnv):
         cost = collision.mean()
 
         # collision between agents and obstacles
-        collision_obs = inside_obstacles(agent_pos, obstacles, r=self._params["car_radius"])
+        # Agent 0: masked obstacles
+        obs0 = self._mask_obstacles_for_agent(obstacles, 0)
+        col0 = inside_obstacles(agent_pos[0][None], obs0)
         
-        # Virtual Leader: Exclude Agent 0 from obstacle collision cost
+        # Others: normal obstacles
+        if self.num_agents > 1:
+            col_others = inside_obstacles(agent_pos[1:], obstacles, r=self._params["car_radius"])
+            collision_obs = jnp.concatenate([col0, col_others])
+        else:
+            collision_obs = col0
+            
+        # Virtual Leader: Exclude Agent 0 from obstacle collision cost (Existing logic preserved, overlapping in effect but safe)
         if self._params.get("virtual_leader", False):
             # Mask out agent 0 (index 0)
             mask = jnp.arange(self.num_agents) != 0
@@ -800,15 +835,33 @@ class DoubleIntegrator(MultiAgentEnv):
         node_type = node_type.at[self.num_agents: self.num_agents * 2].set(DoubleIntegrator.GOAL)
         node_type = node_type.at[-n_hits:].set(DoubleIntegrator.OBS)
 
-        get_lidar_vmap = jax_vmap(
-            ft.partial(
-                get_lidar,
-                obstacles=state.obstacle,
-                num_beams=self._params["n_rays"],
-                sense_range=self._params["comm_radius"],
-            )
+        # Prepare masked obstacles for Agent 0
+        obs0 = self._mask_obstacles_for_agent(state.obstacle, 0)
+        
+        # Calculate lidar for Agent 0
+        lidar0 = get_lidar(
+            state.agent[0, :2],
+            obs0,
+            self._params["n_rays"],
+            self._params["comm_radius"]
         )
-        lidar_data = merge01(get_lidar_vmap(state.agent[:, :2]))
+        
+        # Calculate lidar for others (vmapped)
+        if self.num_agents > 1:
+            get_lidar_vmap = jax_vmap(
+                ft.partial(
+                    get_lidar,
+                    obstacles=state.obstacle,
+                    num_beams=self._params["n_rays"],
+                    sense_range=self._params["comm_radius"],
+                )
+            )
+            lidar_others = get_lidar_vmap(state.agent[1:, :2])
+            lidar_raw = jnp.concatenate([lidar0[None, ...], lidar_others], axis=0)
+        else:
+            lidar_raw = lidar0[None, ...]
+            
+        lidar_data = merge01(lidar_raw)
         lidar_data = jnp.concatenate([lidar_data, jnp.zeros_like(lidar_data)], axis=-1)
         edge_blocks = self.edge_blocks(state, lidar_data)
 
@@ -926,9 +979,18 @@ class DoubleIntegrator(MultiAgentEnv):
 
         safe_agent = jnp.min(safe_agent, axis=1)
 
-        safe_obs = jnp.logical_not(
-            inside_obstacles(agent_pos, graph.env_states.obstacle, self._params["car_radius"] * 2)
+        safe_obs0 = jnp.logical_not(
+            inside_obstacles(agent_pos[0][None], obs0, self._params["car_radius"] * 2)
         )
+        
+        # Others
+        if self.num_agents > 1:
+            safe_obs_others = jnp.logical_not(
+                inside_obstacles(agent_pos[1:], graph.env_states.obstacle, self._params["car_radius"] * 2)
+            )
+            safe_obs = jnp.concatenate([safe_obs0, safe_obs_others])
+        else:
+            safe_obs = safe_obs0
         
         # Virtual Leader: Agent 0 is always safe regarding obstacles
         if self._params.get("virtual_leader", False):
@@ -952,7 +1014,16 @@ class DoubleIntegrator(MultiAgentEnv):
         unsafe_agent = jnp.max(unsafe_agent, axis=1)
 
         # agents are colliding with obstacles
-        unsafe_obs = inside_obstacles(agent_pos, graph.env_states.obstacle, self._params["car_radius"])
+        # Agent 0
+        obs0 = self._mask_obstacles_for_agent(graph.env_states.obstacle, 0)
+        unsafe_obs0 = inside_obstacles(agent_pos[0][None], obs0, self._params["car_radius"])
+        
+        # Others
+        if self.num_agents > 1:
+            unsafe_obs_others = inside_obstacles(agent_pos[1:], graph.env_states.obstacle, self._params["car_radius"])
+            unsafe_obs = jnp.concatenate([unsafe_obs0, unsafe_obs_others])
+        else:
+            unsafe_obs = unsafe_obs0
 
         # Virtual Leader: Exclude Agent 0 from obstacle collision
         if self._params.get("virtual_leader", False):
@@ -1004,7 +1075,16 @@ class DoubleIntegrator(MultiAgentEnv):
         unsafe_agent = jnp.max(unsafe_agent, axis=1)
 
         # agents are colliding with obstacles
-        unsafe_obs = inside_obstacles(agent_pos, graph.env_states.obstacle, self._params["car_radius"])
+        # Agent 0
+        obs0 = self._mask_obstacles_for_agent(graph.env_states.obstacle, 0)
+        unsafe_obs0 = inside_obstacles(agent_pos[0][None], obs0, self._params["car_radius"])
+        
+        # Others
+        if self.num_agents > 1:
+            unsafe_obs_others = inside_obstacles(agent_pos[1:], graph.env_states.obstacle, self._params["car_radius"])
+            unsafe_obs = jnp.concatenate([unsafe_obs0, unsafe_obs_others])
+        else:
+            unsafe_obs = unsafe_obs0
     
         # Virtual Leader: Exclude Agent 0 from obstacle collision
         if self._params.get("virtual_leader", False):

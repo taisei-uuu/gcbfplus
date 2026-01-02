@@ -374,6 +374,7 @@ class MixedObstacle(NamedTuple):
     theta: ObsTheta     # For Rectangle
     radius: Radius      # For Circle
     points: Array       # For Rectangle (vertices)
+    inspection_target: Array # Boolean flag: True if this obstacle is an inspection target
 
     @staticmethod
     def create(
@@ -383,7 +384,11 @@ class MixedObstacle(NamedTuple):
         width: float = 0.0, 
         height: float = 0.0, 
         theta: float = 0.0, 
-        radius: float = 0.0
+        width: float = 0.0, 
+        height: float = 0.0, 
+        theta: float = 0.0, 
+        radius: float = 0.0,
+        inspection_target: bool = False
     ) -> "MixedObstacle":
         
         # Calculate points for Rectangle (always calculate, ignore if Circle)
@@ -422,7 +427,10 @@ class MixedObstacle(NamedTuple):
             height,
             theta, 
             radius, 
-            points
+            theta, 
+            radius, 
+            points,
+            jnp.array(inspection_target, dtype=bool)
         )
 
     def step(self, dt: float) -> "MixedObstacle":
@@ -442,7 +450,9 @@ class MixedObstacle(NamedTuple):
             self.height, 
             self.theta, 
             self.radius, 
-            new_points
+            self.radius, 
+            new_points,
+            self.inspection_target
         )
 
     def inside(self, point: Pos2d, r: Radius = 0.) -> BoolScalar:
