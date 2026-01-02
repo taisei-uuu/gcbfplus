@@ -1,3 +1,4 @@
+from flax import core, struct
 # from jaxtyping import Array, Bool, Float, Int, Shaped
 from typing import Dict, TypeVar, Any, List, Union
 from jax import Array
