@@ -17,7 +17,7 @@ from typing import List, Optional, Union
 from ..trainer.utils import centered_norm
 from ..utils.typing import EdgeIndex, Pos2d, Pos3d, Array
 from ..utils.utils import merge01, tree_index, MutablePatchCollection, save_anim
-from .obstacle import Cuboid, Sphere, Obstacle, Rectangle, Circle, Circle
+from .obstacle import Cuboid, Sphere, Obstacle, Rectangle, Circle, MixedObstacle, SHAPE_RECT, SHAPE_CIRCLE
 from .base import RolloutResult
 
 
@@ -184,6 +184,18 @@ def get_obs_collection(
     elif isinstance(obstacles, Circle):
         n_obs = len(obstacles.center)
         obs_patches = [plt.Circle(obstacles.center[ii], obstacles.radius[ii]) for ii in range(n_obs)]
+        obs_col = PatchCollection(obs_patches, color=color, alpha=1.0, zorder=99)
+    elif isinstance(obstacles, MixedObstacle):
+        n_obs = len(obstacles.center)
+        obs_patches = []
+        for ii in range(n_obs):
+            if obstacles.shape_type[ii] == SHAPE_CIRCLE:
+                obs_patches.append(plt.Circle(obstacles.center[ii], obstacles.radius[ii]))
+            elif obstacles.shape_type[ii] == SHAPE_RECT:
+                obs_patches.append(Polygon(obstacles.points[ii]))
+            else:
+                # Fallback or error
+                pass
         obs_col = PatchCollection(obs_patches, color=color, alpha=1.0, zorder=99)
     else:
         raise NotImplementedError
