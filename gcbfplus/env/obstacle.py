@@ -424,8 +424,6 @@ class MixedObstacle(NamedTuple):
             height,
             theta, 
             radius, 
-            theta, 
-            radius, 
             points,
             jnp.array(inspection_target, dtype=bool)
         )
