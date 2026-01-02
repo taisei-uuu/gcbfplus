@@ -10,7 +10,7 @@ from jax.lax import while_loop
 
 from ..utils.typing import Array, Radius, BoolScalar, Pos, State, Action, PRNGKey
 from ..utils.utils import merge01
-from .obstacle import Obstacle, Rectangle, Cuboid, Sphere, Circle
+from .obstacle import Obstacle, Rectangle, Cuboid, Sphere, Circle, MixedObstacle
 
 
 def RK4_step(x_dot_fn: Callable, x: State, u: Action, dt: float) -> Array:
@@ -47,7 +47,7 @@ def lqr(
 
 
 def get_lidar(start_point: Pos, obstacles: Obstacle, num_beams: int, sense_range: float, max_returns: int = 32):
-    if isinstance(obstacles, Rectangle) or isinstance(obstacles, Circle):
+    if isinstance(obstacles, Rectangle) or isinstance(obstacles, Circle) or isinstance(obstacles, MixedObstacle):
         thetas = jnp.linspace(-np.pi, np.pi - 2 * np.pi / num_beams, num_beams)
         starts = start_point[None, :].repeat(num_beams, axis=0)
         ends = jnp.stack(

@@ -11,7 +11,7 @@ from ..utils.graph import EdgeBlock, GetGraph, GraphsTuple
 from ..utils.typing import Action, AgentState, Array, Cost, Done, Info, Reward, State
 from ..utils.utils import merge01, jax_vmap
 from .base import MultiAgentEnv, RolloutResult
-from .obstacle import Obstacle, Rectangle, Circle
+from .obstacle import Obstacle, Rectangle, Circle, MixedObstacle, SHAPE_RECT, SHAPE_CIRCLE
 from .plot import render_video
 from .utils import get_lidar, inside_obstacles, lqr, get_node_goal_rng
 
@@ -91,10 +91,95 @@ class DoubleIntegrator(MultiAgentEnv):
         self._R = np.eye(self.action_dim)
         self._K = jnp.array(lqr(self._A, self._B, self._Q, self._R))
         
-        if self._params.get("obstacle_type", "rectangle") == "circle":
-            self.create_obstacles = jax_vmap(Circle.create)
-        else:
-            self.create_obstacles = jax_vmap(Rectangle.create)
+        
+        # Always use MixedObstacle for flexibility
+        self.create_obstacles = jax_vmap(MixedObstacle.create)
+        
+        # Preprocess fixed_config if it contains a list of obstacles
+        self._preprocess_config()
+
+    def _preprocess_config(self):
+        fixed_config = self._params.get("fixed_config", None)
+        if fixed_config is None:
+            return
+
+        obs_conf = fixed_config.get("obstacles")
+        if obs_conf is None:
+            return
+
+        # If it's a list, it means we have individual definitions
+        if isinstance(obs_conf, list):
+            n_obs = len(obs_conf)
+            pos = []
+            vel = []
+            shape_type = []
+            width = []
+            height = []
+            theta = []
+            radius = []
+
+            for obs in obs_conf:
+                # Position
+                p = obs.get("pos", [0.0, 0.0])
+                pos.append(p)
+                
+                # Velocity (Motion type handling)
+                # If "speed" is provided, calculate velocity based on "angle" or "velocity" vector
+                # Or just verify "velocity" field.
+                # User request: "Motion type: static or dynamic (if dynamic, specify its speed)."
+                # We expect user to provide 'velocity' vector OR 'speed' + 'heading' OR just 'speed' (random heading?).
+                # Since this is fixed config, deterministic is better. 
+                # Let's support 'velocity' [vx, vy] directly. 
+                # If they say 'dynamic' and 'speed', they might need execution time logic? 
+                # No, fixed config usually implies initial state is fixed.
+                # If 'dynamic' flag is present but no velocity, maybe random? 
+                # For now, look for 'velocity'.
+                
+                v = obs.get("velocity", [0.0, 0.0])
+                vel.append(v)
+                
+                # Shape
+                s_type = obs.get("shape", "rectangle").lower()
+                if s_type == "circle":
+                    shape_type.append(SHAPE_CIRCLE)
+                    radius.append(obs.get("radius", obs.get("r", 0.2)))
+                    # Pad rect params
+                    width.append(0.0)
+                    height.append(0.0)
+                    theta.append(0.0)
+                else:
+                    # Rectangle
+                    shape_type.append(SHAPE_RECT)
+                    radius.append(0.0)
+                    w = obs.get("width", obs.get("w", 0.2))
+                    h = obs.get("height", obs.get("h", 0.2))
+                    # Support 'len' as [w, h] for backward generic compatibility if needed, but dict is explicit
+                    if "len" in obs:
+                        w, h = obs["len"]
+                    width.append(w)
+                    height.append(h)
+                    theta.append(obs.get("theta", obs.get("angle", 0.0)))
+            
+            # Replace the list with SoA dict
+            new_obs_conf = {
+                "pos": obs_conf, # Keep original for debug? No, replace.
+                # We need array-ready lists
+                "gen_pos": np.array(pos),
+                "gen_vel": np.array(vel),
+                "gen_shape": np.array(shape_type, dtype=np.int32),
+                "gen_width": np.array(width),
+                "gen_height": np.array(height),
+                "gen_theta": np.array(theta),
+                "gen_radius": np.array(radius),
+                "is_mixed": True
+            }
+            # Remove "pos" key likely expected by old code?
+            # Old code used: obs_pos = jnp.array(obs_conf["pos"])
+            # So we should populate "pos" with the array.
+            new_obs_conf["pos"] = new_obs_conf["gen_pos"]
+            # And others
+            
+            fixed_config["obstacles"] = new_obs_conf
 
     def _get_formation_radius(self) -> float:
         """
@@ -147,40 +232,65 @@ class DoubleIntegrator(MultiAgentEnv):
         
         if fixed_config is not None:
             # --- 固定設定を使用 ---
-            # Obstacles
+            # --- 固定設定を使用 ---
             obs_conf = fixed_config["obstacles"]
-            obs_pos = jnp.array(obs_conf["pos"])
+            obs_pos = jnp.array(obs_conf["pos"]) # Should be present from preprocessing or old format
             
-            # Velocity
-            if "velocity" in obs_conf:
-                obs_vel = jnp.array(obs_conf["velocity"])
-            else:
-                obs_vel = jnp.zeros_like(obs_pos)
-            
-            if self._params.get("obstacle_type", "rectangle") == "circle":
-                # For circles, we expect "radius"
-                if "radius" in obs_conf:
-                    obs_radius = jnp.array(obs_conf["radius"])
-                elif "len" in obs_conf:
-                    # Fallback or reuse len?
-                     obs_radius = jnp.array(obs_conf["len"])[:, 0]
-                else:
-                    # Default handling or error?
-                    obs_radius = jnp.ones(obs_pos.shape[0]) * 0.2
+            # Check if it is our new mixed format
+            if obs_conf.get("is_mixed", False):
+                obs_vel = jnp.array(obs_conf["gen_vel"])
+                obs_shape = jnp.array(obs_conf["gen_shape"])
+                obs_width = jnp.array(obs_conf["gen_width"])
+                obs_height = jnp.array(obs_conf["gen_height"])
+                obs_theta = jnp.array(obs_conf["gen_theta"])
+                obs_radius = jnp.array(obs_conf["gen_radius"])
                 
-                obstacles = self.create_obstacles(obs_pos, obs_radius, obs_vel)
+                obstacles = self.create_obstacles(
+                    obs_pos, obs_vel, obs_shape, obs_width, obs_height, obs_theta, obs_radius
+                )
             else:
-                # Rectangle
-                obs_len = jnp.array(obs_conf["len"])
-                obs_theta = jnp.array(obs_conf["theta"])
-                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta, obs_vel)
+                # Backward compatibility for old SoA format
+                if "velocity" in obs_conf:
+                    obs_vel = jnp.array(obs_conf["velocity"])
+                else:
+                    obs_vel = jnp.zeros_like(obs_pos)
+                    
+                n_obs = obs_pos.shape[0]
+                
+                if self._params.get("obstacle_type", "rectangle") == "circle":
+                     if "radius" in obs_conf:
+                         obs_r = jnp.array(obs_conf["radius"])
+                     elif "len" in obs_conf:
+                         obs_r = jnp.array(obs_conf["len"])[:, 0]
+                     else:
+                         obs_r = jnp.ones(n_obs) * 0.2
+                     
+                     obstacles = self.create_obstacles(
+                         obs_pos, obs_vel, 
+                         jnp.ones(n_obs, dtype=jnp.int32) * SHAPE_CIRCLE, # Shape
+                         jnp.zeros(n_obs), # Width
+                         jnp.zeros(n_obs), # Height
+                         jnp.zeros(n_obs), # Theta
+                         obs_r # Radius
+                     )
+                else:
+                    # Rectangle
+                    obs_len = jnp.array(obs_conf["len"])
+                    obs_theta = jnp.array(obs_conf["theta"])
+                    obstacles = self.create_obstacles(
+                        obs_pos, obs_vel,
+                        jnp.zeros(n_obs, dtype=jnp.int32) * SHAPE_RECT,
+                        obs_len[:, 0],
+                        obs_len[:, 1],
+                        obs_theta,
+                        jnp.zeros(n_obs), # Radius
+                    )
             
             # Agents
             agent_conf = fixed_config["agents"]
             states = jnp.array(agent_conf["start"])
             goals = jnp.array(agent_conf["goal"])
             
-            # エージェント数が合っているか確認 (Optional)
             # assert states.shape[0] == self.num_agents
         else:
             # --- 通常のランダム生成 ---
@@ -197,7 +307,6 @@ class DoubleIntegrator(MultiAgentEnv):
                                    maxval=self._params["obs_vel_range"][1])
             dir_key, key = jr.split(key, 2)
             obs_vel_dir = jr.normal(dir_key, (n_rng_obs, 2))
-            # avoid division by zero if norm is 0 (unlikely with normal)
             obs_vel_dir = obs_vel_dir / (jnp.linalg.norm(obs_vel_dir, axis=1, keepdims=True) + 1e-6)
             obs_vel = obs_vel_dir * obs_speed[:, None]
 
@@ -210,7 +319,15 @@ class DoubleIntegrator(MultiAgentEnv):
                     minval=self._params["obs_len_range"][0],
                     maxval=self._params["obs_len_range"][1],
                 )
-                obstacles = self.create_obstacles(obs_pos, obs_radius, obs_vel)
+                
+                obstacles = self.create_obstacles(
+                    obs_pos, obs_vel,
+                    jnp.ones(n_rng_obs, dtype=jnp.int32) * SHAPE_CIRCLE,
+                    jnp.zeros(n_rng_obs), # Width
+                    jnp.zeros(n_rng_obs), # Height
+                    jnp.zeros(n_rng_obs), # Theta
+                    obs_radius
+                )
             else:
                 length_key, key = jr.split(key, 2)
                 obs_len = jr.uniform(
@@ -221,7 +338,15 @@ class DoubleIntegrator(MultiAgentEnv):
                 )
                 theta_key, key = jr.split(key, 2)
                 obs_theta = jr.uniform(theta_key, (n_rng_obs,), minval=0, maxval=2 * np.pi)
-                obstacles = self.create_obstacles(obs_pos, obs_len[:, 0], obs_len[:, 1], obs_theta, obs_vel)
+                
+                obstacles = self.create_obstacles(
+                    obs_pos, obs_vel,
+                    jnp.zeros(n_rng_obs, dtype=jnp.int32) * SHAPE_RECT,
+                    obs_len[:, 0],
+                    obs_len[:, 1],
+                    obs_theta,
+                    jnp.zeros(n_rng_obs)
+                )
     
             # randomly generate agent and goal
             states, goals = get_node_goal_rng(
