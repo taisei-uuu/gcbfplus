@@ -5,11 +5,15 @@ from jax import Array
 import jax.numpy as jnp
 from numpy import ndarray
 
-# Dummy aliases for jaxtyping
-Bool = Any
-Float = Any
-Int = Any
-Shaped = Any
+# Dummy aliases for jaxtyping that support subscripting
+class DummyType:
+    def __class_getitem__(cls, item):
+        return Any
+
+Bool = DummyType
+Float = DummyType
+Int = DummyType
+Shaped = DummyType
 
 
 # jax types
