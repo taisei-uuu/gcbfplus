@@ -142,6 +142,7 @@ def get_node_goal_rng(
         formation_mode: bool = False, # フォーメーションモードかどうかのフラグ
         formation_spawn_min: float = 0.4, # Min spawn distance from leader
         formation_spawn_max: float = 0.8, # Max spawn distance from leader
+        virtual_leader: bool = False, # Virtual leader mode
 ) -> [Pos, Pos]:
     max_iter = 1024  # maximum number of iterations to find a valid initial state/goal
     states = jnp.zeros((n, dim))
@@ -185,8 +186,30 @@ def get_node_goal_rng(
         i_iter, _, node, all_nodes = reset_input
         dist_min = jnp.linalg.norm(all_nodes - node, axis=1).min()
         collide = dist_min <= min_dist
+        
+        # Check obstacle collision
+        # If virtual_leader is enabled, we need to know if this is the leader (agent 0).
+        # However, `agent_id` is not passed to this function directly. 
+        # But `i_iter` counts up, and this function is used in `while_loop`.
+        # The `reset_body` knows who we are generating for.
+        # We need to change how `non_valid_node` works or create a specialized one.
+        
+        # Actually, `reset_body` calls `while_loop` with `non_valid_node`.
+        # We can define `non_valid_node` inside `reset_body` or pass `is_leader` to it?
+        # `reset_body` defines specialized logic for follower/leader.
+        # Let's modify `reset_body` to define the condition dynamically or pass a flag.
+        
         inside = inside_obstacles(node, obstacles, r=min_dist)
         valid = ~(collide | inside) | (i_iter >= max_iter)
+        return ~valid
+
+    def non_valid_node_virtual_leader(reset_input: Tuple[int, Array, Array, Array]):
+         # Same as non_valid_node but ignores obstacle collision
+        i_iter, _, node, all_nodes = reset_input
+        dist_min = jnp.linalg.norm(all_nodes - node, axis=1).min()
+        collide = dist_min <= min_dist
+        # inside = inside_obstacles(node, obstacles, r=min_dist) # Ignore obstacles
+        valid = ~collide | (i_iter >= max_iter)
         return ~valid
 
     def get_goal(reset_input: Tuple[int, Array, Array, Array, Array]):
@@ -214,6 +237,21 @@ def get_node_goal_rng(
         valid = (~collide & ~inside & ~outside & ~too_long) | (i_iter >= max_iter)
         out = ~valid
         assert out.shape == tuple() and out.dtype == jnp.bool_
+        return out
+
+    def non_valid_goal_virtual_leader(reset_input: Tuple[int, Array, Array, Array, Array]):
+         # Same as non_valid_goal but ignores obstacle/inside checks
+        i_iter, _, goal, agent, all_goals = reset_input
+        dist_min = jnp.linalg.norm(all_goals - goal, axis=1).min()
+        collide = dist_min <= min_dist
+        # inside = inside_obstacles(goal, obstacles, r=min_dist)
+        outside = jnp.any(goal < 0) | jnp.any(goal > side_length)
+        if max_travel is None:
+            too_long = np.array(False, dtype=bool)
+        else:
+            too_long = jnp.linalg.norm(goal - agent) > max_travel
+        valid = (~collide & ~outside & ~too_long) | (i_iter >= max_iter)
+        out = ~valid
         return out
 
     def reset_body(reset_input: Tuple[int, Array, Array, Array]):
@@ -254,14 +292,36 @@ def get_node_goal_rng(
                 init_val=init_val
             )
         
+        # Decide which validation function to use
+        # For leader (agent 0) in virtual mode, use permissive check
+        use_virtual_check = jnp.logical_and(is_leader, virtual_leader)
+        
         def use_leader_logic(init_val):
             """リーダー用のロジックを実行"""
-            return while_loop(
-                cond_fun=non_valid_node, 
-                body_fun=get_node,
-                init_val=init_val
+            # Logic: if virtual leader, use non_valid_node_virtual_leader, else non_valid_node
+            # But cond_fun must be static per loop? No, it's just a callable.
+            # But jax.lax.while_loop expects a fixed function. 
+            # We can select the function BEFORE calling while_loop? 
+            # No, we can't switch python functions inside JAX jit easily unless using cond.
+            # Easiest way: pass a validation function or define one that checks the flag? 
+            # But `non_valid_node` doesn't capture `use_virtual_check`.
+            # Let's use `jax.lax.cond` here too or make `non_valid_node` smarter?
+            # Actually, `reset_body` is JIT-compiled. `virtual_leader` is static (arg to get_node_goal_rng, usually static config).
+            # If `virtual_leader` is python bool, we can just pick the function at python time!
+            # The signature says `virtual_leader: bool = False`. If it's passed as python bool (which it usually is for config),
+            # we can do `cond_fun = non_valid_node_virtual_leader if (agent_id == 0 and virtual_leader) else non_valid_node`.
+            # BUT `agent_id` is a tracer (dynamic array) inside loop.
+            
+            # Since we split `use_leader_logic` and `use_follower_logic` based on `should_use_follower`,
+            # we can further split `use_leader_logic`.
+            
+            return jax.lax.cond(
+                use_virtual_check,
+                lambda v: while_loop(non_valid_node_virtual_leader, get_node, v),
+                lambda v: while_loop(non_valid_node, get_node, v),
+                init_val
             )
-
+            
         n_iter_agent, _, agent_candidate, _ = jax.lax.cond(
             should_use_follower,
             use_follower_logic,
@@ -276,9 +336,15 @@ def get_node_goal_rng(
         else:
             goal_candidate = jr.uniform(goal_key, (dim,), minval=0, maxval=max_travel) + agent_candidate
 
-        n_iter_goal, _, goal_candidate, _, _ = while_loop(
-            cond_fun=non_valid_goal, body_fun=get_goal,
-            init_val=(0, goal_key, goal_candidate, agent_candidate, all_goals)
+        # Determine goal validation for this agent
+        # Similar logic: if virtual leader, skip obstacle check
+        use_virtual_goal_check = jnp.logical_and(is_leader, virtual_leader)
+        
+        n_iter_goal, _, goal_candidate, _, _ = jax.lax.cond(
+            use_virtual_goal_check,
+            lambda v: while_loop(non_valid_goal_virtual_leader, get_goal, v),
+            lambda v: while_loop(non_valid_goal, get_goal, v),
+            (0, goal_key, goal_candidate, agent_candidate, all_goals)
         )
         all_goals = all_goals.at[agent_id].set(goal_candidate)
         agent_id += 1

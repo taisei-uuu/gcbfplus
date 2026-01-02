@@ -255,8 +255,18 @@ def render_video(
     n_pos = graph0.states[:n_agent * 2, :dim]
     n_radius = np.array([r] * n_agent * 2)
     if dim == 2:
-        agent_circs = [plt.Circle(n_pos[ii], n_radius[ii], color=n_color[ii], linewidth=0.0)
-                       for ii in range(n_agent * 2)]
+        # Check for virtual leader flag
+        virtual_leader = viz_opts.get("virtual_leader", False)
+        
+        agent_circs = []
+        for ii in range(n_agent * 2):
+            if ii == 0 and virtual_leader:
+                 # Virtual leader: White face, Blue edge, Thicker line
+                 circ = plt.Circle(n_pos[ii], n_radius[ii], facecolor="white", edgecolor="blue", linewidth=2.0)
+            else:
+                 circ = plt.Circle(n_pos[ii], n_radius[ii], color=n_color[ii], linewidth=0.0)
+            agent_circs.append(circ)
+            
         agent_col = MutablePatchCollection([i for i in reversed(agent_circs)], match_original=True, zorder=6)
         ax.add_collection(agent_col)
     else:
@@ -379,7 +389,8 @@ def render_video(
         # update agent positions
         if dim == 2:
             for ii in range(n_agent):
-                agent_circs[ii].set_center(tuple(n_pos_t[ii]))
+                 agent_circs[ii].set_center(tuple(n_pos_t[ii]))
+                 # If virtual leader, maybe ensure zorder or appearance persists (handled by init)
             # ゴールの位置を更新（追加）
             for ii in range(n_agent, n_agent * 2):
                 agent_circs[ii].set_center(tuple(n_pos_t[ii]))

@@ -65,6 +65,7 @@ class DoubleIntegrator(MultiAgentEnv):
         "apf_obs_dist": 0.5,        # Sensing range for obstacles (meters)
         "apf_agent_dist": 0.3,      # Sensing range for other agents
         "apf_max_adjustment": 1.0,  # Max offset adjustment magnitude (meters)
+        "virtual_leader": False,    # Virtual leader mode: Agent 0 ignores obstacles
     }
 
     def __init__(
@@ -355,6 +356,7 @@ class DoubleIntegrator(MultiAgentEnv):
                 formation_mode=self._params.get("formation_mode", False),
                 formation_spawn_min=self._params.get("formation_spawn_min", 0.4),
                 formation_spawn_max=self._params.get("formation_spawn_max", 0.8),
+                virtual_leader=self._params.get("virtual_leader", False),
             )
 
             # Apply spawn_offsets if provided
@@ -679,8 +681,15 @@ class DoubleIntegrator(MultiAgentEnv):
         cost = collision.mean()
 
         # collision between agents and obstacles
-        collision = inside_obstacles(agent_pos, obstacles, r=self._params["car_radius"])
-        cost += collision.mean()
+        collision_obs = inside_obstacles(agent_pos, obstacles, r=self._params["car_radius"])
+        
+        # Virtual Leader: Exclude Agent 0 from obstacle collision cost
+        if self._params.get("virtual_leader", False):
+            # Mask out agent 0 (index 0)
+            mask = jnp.arange(self.num_agents) != 0
+            collision_obs = collision_obs * mask
+            
+        cost += collision_obs.mean()
 
         return cost
 
@@ -702,9 +711,10 @@ class DoubleIntegrator(MultiAgentEnv):
             n_rays=self.params["n_rays"],
             r=self.params["car_radius"],
             Ta_is_unsafe=Ta_is_unsafe,
-            viz_opts=viz_opts,
             dpi=dpi,
-            **kwargs
+            **kwargs,
+            # Add virtual_leader flag to viz_opts
+            viz_opts={**(viz_opts or {}), "virtual_leader": self._params.get("virtual_leader", False)}
         )
 
     def edge_blocks(self, state: EnvState, lidar_data: State) -> list[EdgeBlock]:
@@ -914,6 +924,11 @@ class DoubleIntegrator(MultiAgentEnv):
         safe_obs = jnp.logical_not(
             inside_obstacles(agent_pos, graph.env_states.obstacle, self._params["car_radius"] * 2)
         )
+        
+        # Virtual Leader: Agent 0 is always safe regarding obstacles
+        if self._params.get("virtual_leader", False):
+            # safe_obs[0] = True
+            safe_obs = safe_obs.at[0].set(True)
 
         safe_mask = jnp.logical_and(safe_agent, safe_obs)
 

@@ -73,7 +73,8 @@ def test(args):
         formation_flexible_assignment=args.formation_flexible_assignment,  # 追加
         fixed_config=fixed_config, # 追加
         spawn_offsets=spawn_offsets, # 追加
-        obstacle_type=args.obstacle_type # 追加
+        obstacle_type=args.obstacle_type, # 追加
+        virtual_leader=args.virtual_leader # 追加
     )
 
     if not args.u_ref:
@@ -329,6 +330,12 @@ def main():
         default="rectangle",
         choices=["rectangle", "circle"],
         help="Type of obstacles to generate: 'rectangle' or 'circle'"
+    )
+    parser.add_argument(
+        "--virtual-leader",
+        action="store_true",
+        default=False,
+        help="Enable virtual leader mode (Agent 0 ignores obstacles)"
     )
 
     args = parser.parse_args()
