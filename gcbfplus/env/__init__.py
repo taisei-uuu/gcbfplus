@@ -37,6 +37,7 @@ def make_env(
         spawn_offsets: Optional[list] = None,  # 追加
         obstacle_type: str = "rectangle",  # 追加
         obs_vel: float = 0.0,  # 追加
+        virtual_leader: bool = False, # 追加
 ) -> MultiAgentEnv:
     assert env_id in ENV.keys(), f'Environment {env_id} not implemented.'
     params = ENV[env_id].PARAMS.copy()
@@ -72,6 +73,9 @@ def make_env(
 
     if obs_vel > 0:
         params["obs_vel_range"] = [0.0, obs_vel]
+
+    if virtual_leader:
+        params["virtual_leader"] = True
 
     return ENV[env_id](
         num_agents=num_agents,

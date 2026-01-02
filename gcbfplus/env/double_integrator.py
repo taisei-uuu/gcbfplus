@@ -949,6 +949,10 @@ class DoubleIntegrator(MultiAgentEnv):
         # agents are colliding with obstacles
         unsafe_obs = inside_obstacles(agent_pos, graph.env_states.obstacle, self._params["car_radius"])
 
+        # Virtual Leader: Exclude Agent 0 from obstacle collision
+        if self._params.get("virtual_leader", False):
+            unsafe_obs = unsafe_obs.at[0].set(False)
+
         collision_mask = jnp.logical_or(unsafe_agent, unsafe_obs)
 
         # unsafe direction
@@ -957,6 +961,13 @@ class DoubleIntegrator(MultiAgentEnv):
         obs_pos = graph.type_states(type_idx=2, n_type=self._params["n_rays"] * self.num_agents)[:, :2]
         obs_pos_diff = obs_pos[None, :, :] - agent_pos[:, None, :]
         obs_dist = jnp.linalg.norm(obs_pos_diff, axis=-1)
+        
+        # Virtual Leader: Exclude Agent 0 from obstacle warnings
+        if self._params.get("virtual_leader", False):
+             # Set dist to infinity for Agent 0 to avoid warning
+             # obs_dist is (N_agent, N_rays*N_agent)
+             obs_dist = obs_dist.at[0, :].set(jnp.inf)
+
         pos_diff = jnp.concatenate([agent_pos_diff, obs_pos_diff], axis=1)
         warn_zone = jnp.concatenate([jnp.less(agent_dist, agent_warn_dist), jnp.less(obs_dist, obs_warn_dist)], axis=1)
         pos_vec = (pos_diff / (jnp.linalg.norm(pos_diff, axis=2, keepdims=True) + 0.0001))
@@ -989,6 +1000,10 @@ class DoubleIntegrator(MultiAgentEnv):
 
         # agents are colliding with obstacles
         unsafe_obs = inside_obstacles(agent_pos, graph.env_states.obstacle, self._params["car_radius"])
+    
+        # Virtual Leader: Exclude Agent 0 from obstacle collision
+        if self._params.get("virtual_leader", False):
+            unsafe_obs = unsafe_obs.at[0].set(False)
 
         collision_mask = jnp.logical_or(unsafe_agent, unsafe_obs)
 
