@@ -34,11 +34,12 @@ def test_mixed_obstacles():
         }
     }
     
-    params = {
+    params = DoubleIntegrator.PARAMS.copy()
+    params.update({
         "fixed_config": fixed_config,
         "n_obs": 2, # ignored but good to set
         "num_agents": 1
-    }
+    })
     
     env = DoubleIntegrator(num_agents=1, area_size=2.0, params=params)
     
