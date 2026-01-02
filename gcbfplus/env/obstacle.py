@@ -445,7 +445,6 @@ class MixedObstacle(NamedTuple):
             self.height, 
             self.theta, 
             self.radius, 
-            self.radius, 
             new_points,
             self.inspection_target
         )
