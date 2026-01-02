@@ -1,10 +1,14 @@
-from flax import core, struct
 # from jaxtyping import Array, Bool, Float, Int, Shaped
 from typing import Dict, TypeVar, Any, List, Union
 from jax import Array
 import jax.numpy as jnp
-from typing import Dict, TypeVar, Any, List
 from numpy import ndarray
+
+# Dummy aliases for jaxtyping
+Bool = Any
+Float = Any
+Int = Any
+Shaped = Any
 
 
 # jax types
