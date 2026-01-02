@@ -752,6 +752,11 @@ class DoubleIntegrator(MultiAgentEnv):
             lidar_feats = state.agent[i, :] - lidar_data[id_hits, :]
             lidar_dist = jnp.linalg.norm(lidar_pos, axis=-1)
             active_lidar = jnp.less(lidar_dist, self._params["comm_radius"] - 1e-1)
+            
+            # Virtual Leader: Suppress lidar logic for Agent 0
+            if self._params.get("virtual_leader", False) and i == 0:
+                active_lidar = jnp.zeros_like(active_lidar, dtype=bool)
+                
             agent_obs_mask = jnp.ones((1, self._params["n_rays"]))
             agent_obs_mask = jnp.logical_and(agent_obs_mask, active_lidar)
             agent_obs_edges.append(
