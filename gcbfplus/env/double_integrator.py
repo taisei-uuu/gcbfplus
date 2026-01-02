@@ -182,8 +182,9 @@ class DoubleIntegrator(MultiAgentEnv):
                     height.append(h)
                     theta.append(obs.get("theta", obs.get("angle", 0.0)))
             
-            # Inspection Target
-            inspection_target.append(obs.get("inspection_target", False))
+                
+                # Inspection Target
+                inspection_target.append(obs.get("inspection_target", False))
             
             # Replace the list with SoA dict
             new_obs_conf = {
