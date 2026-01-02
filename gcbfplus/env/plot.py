@@ -330,12 +330,13 @@ def render_video(
         zorder=7,
     )
     agent_labels = []
-    if dim == 2:
-        agent_labels = [ax.text(n_pos[ii, 0], n_pos[ii, 1], f"{ii}", **label_font_opts) for ii in range(n_agent)]
-    else:
-        for ii in range(n_agent):
-            pos2d = proj3d.proj_transform(n_pos[ii, 0], n_pos[ii, 1], n_pos[ii, 2], ax.get_proj())[:2]
-            agent_labels.append(ax.text2D(pos2d[0], pos2d[1], f"{ii}", **label_font_opts))
+    if viz_opts.get("show_agent_ids", False):
+        if dim == 2:
+            agent_labels = [ax.text(n_pos[ii, 0], n_pos[ii, 1], f"{ii}", **label_font_opts) for ii in range(n_agent)]
+        else:
+            for ii in range(n_agent):
+                pos2d = proj3d.proj_transform(n_pos[ii, 0], n_pos[ii, 1], n_pos[ii, 2], ax.get_proj())[:2]
+                agent_labels.append(ax.text2D(pos2d[0], pos2d[1], f"{ii}", **label_font_opts))
 
     # plot path
     plot_path = viz_opts.get("plot_path", False)
@@ -411,12 +412,13 @@ def render_video(
         edge_col.set_colors(e_colors_t)
 
         # update agent labels
-        for ii in range(n_agent):
-            if dim == 2:
-                agent_labels[ii].set_position(n_pos_t[ii])
-            else:
-                text_pos = proj3d.proj_transform(n_pos_t[ii, 0], n_pos_t[ii, 1], n_pos_t[ii, 2], ax.get_proj())[:2]
-                agent_labels[ii].set_position(text_pos)
+        if viz_opts.get("show_agent_ids", False):
+            for ii in range(n_agent):
+                if dim == 2:
+                    agent_labels[ii].set_position(n_pos_t[ii])
+                else:
+                    text_pos = proj3d.proj_transform(n_pos_t[ii, 0], n_pos_t[ii, 1], n_pos_t[ii, 2], ax.get_proj())[:2]
+                    agent_labels[ii].set_position(text_pos)
 
         # update paths
         if plot_path:
