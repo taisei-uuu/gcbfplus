@@ -350,9 +350,6 @@ class DoubleIntegrator(MultiAgentEnv):
             
             # Top Wall
             # Height from (gap_y + gap_width/2) to 10.0 (Area Size assumed 10 usually, or use self.area_size?)
-            # User fixed params say Leader Start [2,5], Goal [8,5]. Area size likely 10x10.
-            # We should probably use self.area_size but fixed params imply scale.
-            # Assuming area_size is at least 10 for Y=10 spawn point.
             h_top = self.area_size - (gap_y + gap_width / 2.0)
             y_top = self.area_size - h_top / 2.0
             
@@ -371,36 +368,14 @@ class DoubleIntegrator(MultiAgentEnv):
             # B. Dynamic Obstacles
             # Count: Random integer [1, 6] -> 1, 2, 3, 4, 5, 6
             count_key, key = jr.split(key, 2)
-            # randint is exclusive on high, so [1, 7)
             n_dyn = jr.randint(count_key, (), 1, 7)
             
-            # We need to allocate fixed size array for JIT, so we assume max 6 dynamic obstacles
-            # + 2 walls + 2 inspection targets = 10 max
-            # Since n_obs in params usually sets the buffer size, we should ensure n_obs is enough.
-            # But here we are creating obstacles dynamically. 
-            # MixedObstacle.create expects fixed arrays? 
-            # Yes, usually we pad or use a fixed max number.
-            # However, create_obstacles returns a structure of arrays.
-            # If we vary the size across episodes, JIT recompilation might happen if traces depend on size.
-            # But here reset is JITted? Using `jax.jit` on the environment step/reset functions usually.
-            # If the size of arrays changes, it triggers recompilation.
-            # To avoid this, we should probably construct a MAX_OBS set and mark some as inactive/dummy?
-            # Or just accept variable size (if only called once per episode at start, maybe fine?)
-            # But wait, `test.py` calls `reset` inside a loop?
-            # No, `test.py` calls `rollout_fn` which calls `reset`.
-            # `rollout_fn` is JITted.
-            # So `reset` must return fixed shape arrays.
-            
             MAX_DYN = 6
-            # We will generate MAX_DYN obstacles and mask the unused ones by placing them far away or zero size?
-            # Or better, making them "inactive". 
-            # MixedObstacle doesn't have "active" flag but we can move them to infinity.
             
             # Generate parameters for all MAX_DYN potential obstacles
             dyn_keys = jr.split(key, MAX_DYN * 5)
             
             # Spawn Side: Top (y=self.area_size) or Bottom (y=0)
-            # 0: Bottom, 1: Top
             side_key = dyn_keys[0]
             sides = jr.randint(side_key, (MAX_DYN,), 0, 2) # 0 or 1
             
@@ -421,39 +396,19 @@ class DoubleIntegrator(MultiAgentEnv):
             ang_deg = jr.uniform(ang_key, (MAX_DYN,), minval=-25.0, maxval=25.0)
             ang_rad = ang_deg * (jnp.pi / 180.0)
             
-            # Vertical axis direction depends on side
-            # Top (y=10) -> moving down (-y) -> angle 0 means -90 deg in standard?
-            # Bottom (y=0) -> moving up (+y) -> angle 0 means +90 deg in standard?
-            
-            # Let's define vector:
-            # If Bottom: Base vector (0, 1). Rotate by ang_rad.
-            # If Top: Base vector (0, -1). Rotate by ang_rad.
-            
             base_vx = jnp.zeros(MAX_DYN)
             base_vy = jnp.where(sides == 1, -1.0, 1.0)
-            
-            # Rotate (vx, vy) by ang_rad
-            # x' = x cos - y sin ? No, standard rotation.
-            # vx = -sin(theta) if base is y?
-            # Easier: 
-            # angle from Y-axis.
-            # vx = speed * sin(angle)
-            # vy = speed * cos(angle) * (1 if bottom else -1)
             
             dyn_vx = vel_mag * jnp.sin(ang_rad)
             dyn_vy = vel_mag * jnp.cos(ang_rad) * jnp.where(sides == 1, -1.0, 1.0)
             
             dyn_vel = jnp.stack([dyn_vx, dyn_vy], axis=1)
             
-            # Size: [0.15, 0.3] (Radius? Or diameter? "Size". Usually radius or side len.)
-            # Assuming radius for circles. "Two circles with Radius=0.35m" (Targets) specified radius.
-            # "Size ... [0.15, 0.3]"
-            # Let's assume this is Radius.
+            # Size: [0.15, 0.3]
             size_key = dyn_keys[4]
             dyn_radius = jr.uniform(size_key, (MAX_DYN,), minval=0.15, maxval=0.3)
             
             # Filter active ones
-            # Indices < n_dyn are active
             active_mask = jnp.arange(MAX_DYN) < n_dyn
             
             # Move inactive to infinity
@@ -471,15 +426,6 @@ class DoubleIntegrator(MultiAgentEnv):
             target_inspection = jnp.array([True, True])
             
             # Combine All Obstacles
-            # 1. Wall (2 Rects)
-            # 2. Dynamic (MAX_DYN Circles)
-            # 3. Targets (2 Circles)
-            
-            # Shapes:
-            # Wall: RECT
-            # Dynamic: CIRCLE (assumed from "Size" and typical dynamic obstacles)
-            # Targets: CIRCLE
-            
             all_pos = jnp.concatenate([wall_pos, dyn_pos, target_pos], axis=0)
             all_vel = jnp.concatenate([wall_inv_vel, dyn_vel, target_vel], axis=0)
             
@@ -523,59 +469,36 @@ class DoubleIntegrator(MultiAgentEnv):
                 all_pos, all_vel, all_shape, all_width, all_height, all_theta, all_radius, all_inspection
             )
             
-            # 2. Fixed Agent Parameters
-            # Start: [2.0, 5.0], Goal: [8.0, 5.0]
-            # Assumes 1 Leader. 
-            # If multiple agents, they spawn around leader?
-            # "Agent Start/Goal Positions ... Leader Start: [2.0, 5.0]..."
-            # Followers will use standard formation logic relative to leader.
-            
-            leader_start = jnp.array([[2.0, 5.0]])
-            leader_goal = jnp.array([[8.0, 5.0]])
-            
-            # If more agents, populate with zeros initially, logic below handles formation
-            states = jnp.zeros((self.num_agents, 2))
-            states = states.at[0].set(leader_start[0])
-            
-            goals = jnp.zeros((self.num_agents, 2))
-            goals = goals.at[0].set(leader_goal[0])
-            
-            # Apply spawn offsets for followers if any?
-            # The logic below "Apply spawn_offsets" or "get_node_goal_rng" handles followers.
-            # But "get_node_goal_rng" does random generation.
-            # We need to manually set follower starts if not random.
-            # "All other configurations ... must remain FIXED".
-            # This implies if we have followers, their relative start formation is fixed?
-            # Usually formation mode handles this relative to leader.
-            
-            # If we skip get_node_goal_rng, we need to handle follower spawn manually.
-            # Reuse logic from "spawn_offsets" or "formation_offsets"?
-            
-            # Let's assume standard formation start.
-            if self.num_agents > 1:
-                # Use formation_offsets to determine start positions if available
-                f_offsets = self._params.get("formation_offsets")
-                if f_offsets is not None:
-                     # formation_offsets: [[x,y], [x,y]] relative to leader
-                     # Followers start at Leader + Offset
-                     # Note: formation_offsets usually includes leader as 0,0? Or just followers?
-                     # In make_env: formation_offsets = [[0.3, 0.0], [-0.3, 0.0]] (2 followers)
-                     # index 0 -> Agent 1, index 1 -> Agent 2 (Agent 0 is Leader)
-                     
-                     # We need to ensure we have enough offsets
-                     n_followers = self.num_agents - 1
-                     offsets_arr = jnp.array(f_offsets)
-                     # Take up to n_followers
-                     use_offsets = offsets_arr[:n_followers]
-                     
-                     follower_starts = leader_start + use_offsets
-                     states = states.at[1:1+len(use_offsets)].set(follower_starts)
-                     
-                     # Goals?
-                     # Leader Goal is [8,5].
-                     # Followers goal is Leader Goal + Offset?
-                     follower_goals = leader_goal + use_offsets
-                     goals = goals.at[1:1+len(use_offsets)].set(follower_goals)
+            # --- Common Agent Generation (Random/Formation) ---
+            # randomly generate agent and goal
+            states, goals = get_node_goal_rng(
+                key, self.area_size, 2, obstacles, self.num_agents, 4 * self.params["car_radius"], self.max_travel,
+                # 初期位置を限定
+                formation_mode=self._params.get("formation_mode", False),
+                formation_spawn_min=self._params.get("formation_spawn_min", 0.4),
+                formation_spawn_max=self._params.get("formation_spawn_max", 0.8),
+                virtual_leader=self._params.get("virtual_leader", False),
+            )
+
+            # Apply spawn_offsets if provided
+            spawn_offsets = self._params.get("spawn_offsets")
+            if spawn_offsets is not None:
+                # spawn_offsets is expected to be a list of lists or array: [[x1, y1], [x2, y2], ...]
+                # corresponding to agent 1, 2, ... (followers)
+                offsets = jnp.array(spawn_offsets)
+                n_offsets = offsets.shape[0]
+                n_apply = min(n_offsets, self.num_agents - 1)
+                
+                if n_apply > 0:
+                    leader_pos = states[0, :2]
+                    target_pos = leader_pos + offsets[:n_apply]
+                    # Clip to area boundaries
+                    target_pos = jnp.clip(target_pos, 0, self.area_size)
+                    
+                    # Update states for followers
+                    # We need to construct the update for slicing
+                    # states is (num_agents, 2)
+                    states = states.at[1:1+n_apply, :2].set(target_pos)
 
         else:
             # --- 通常のランダム生成 ---
