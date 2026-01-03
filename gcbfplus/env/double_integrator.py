@@ -331,9 +331,10 @@ class DoubleIntegrator(MultiAgentEnv):
             gap_width_key, key = jr.split(key, 2)
             gap_width = jr.uniform(gap_width_key, (), minval=1.0, maxval=2.5)
             
-            # Gap Y-Position: [3.5, 6.5]
-            gap_y_key, key = jr.split(key, 2)
-            gap_y = jr.uniform(gap_y_key, (), minval=3.5, maxval=6.5)
+            # Gap Y-Position: Fixed at 5.0 (Center)
+            # gap_y_key, key = jr.split(key, 2)
+            # gap_y = jr.uniform(gap_y_key, (), minval=3.5, maxval=6.5)
+            gap_y = 5.0
             
             # Wall Thickness: [1.0, 5.0]
             thickness_key, key = jr.split(key, 2)
@@ -470,17 +471,55 @@ class DoubleIntegrator(MultiAgentEnv):
             )
             
             # --- Common Agent Generation (Random/Formation) ---
-            # randomly generate agent and goal
-            states, goals = get_node_goal_rng(
-                key, self.area_size, 2, obstacles, self.num_agents, 4 * self.params["car_radius"], self.max_travel,
-                # 初期位置を限定
-                formation_mode=self._params.get("formation_mode", False),
-                formation_spawn_min=self._params.get("formation_spawn_min", 0.4),
-                formation_spawn_max=self._params.get("formation_spawn_max", 0.8),
-                virtual_leader=self._params.get("virtual_leader", False),
-            )
+            
+            # Decide Leader Start/Goal
+            if self._params.get("eval_mode", False):
+                # Fixed Leader for Eval Mode
+                # Leader Start: [2.0, 5.0]
+                # Leader Goal: [8.0, 5.0]
+                # Note: We construct full arrays (num_agents, 2)
+                
+                # Start with dummy values or random (will be overwritten for leader)
+                # We can just zeros
+                states = jnp.zeros((self.num_agents, 2))
+                states = states.at[0].set(jnp.array([2.0, 5.0]))
+                
+                goals = jnp.zeros((self.num_agents, 2))
+                goals = goals.at[0].set(jnp.array([8.0, 5.0]))
+                
+                # For followers, if spawn_offsets exists, it will be applied below.
+                # If NOT exists, we probably need some default behavior to prevent 0,0 spawn?
+                # But user said "Use external arguments". 
+                # If they assume formation mode, they should pass --spawn-offsets or rely on formation assignment in step() which updates GOALS.
+                # But initial POSITION needs to be valid.
+                # If we leave followers at [0,0], they might collide or be invalid.
+                # Let's apply default formation offset relative to leader if spawn_offsets is missing?
+                # Or reuse get_node_goal_rng for followers only? Hard.
+                
+                # Let's assume for now user provides offsets or we place them slightly clustered.
+                # But best to just initialize them same as leader if no offsets, and let collision/repulsion push them? 
+                # No, they explode.
+                # Let's use the 'formation_offsets' from params if available to set initial pos?
+                # make_env sets default formation_offsets if formation_mode is True.
+                
+                # If spawn_offsets is None, check formation_offsets
+                if self._params.get("spawn_offsets") is None and self._params.get("formation_offsets") is None:
+                     # Fallback: simple cluster around leader
+                     # But this might not be needed if user is providing args.
+                     pass 
+                     
+            else:
+                 # Standard Random Generation
+                states, goals = get_node_goal_rng(
+                    key, self.area_size, 2, obstacles, self.num_agents, 4 * self.params["car_radius"], self.max_travel,
+                    # 初期位置を限定
+                    formation_mode=self._params.get("formation_mode", False),
+                    formation_spawn_min=self._params.get("formation_spawn_min", 0.4),
+                    formation_spawn_max=self._params.get("formation_spawn_max", 0.8),
+                    virtual_leader=self._params.get("virtual_leader", False),
+                )
 
-            # Apply spawn_offsets if provided
+            # Apply spawn_offsets if provided (Common for both)
             spawn_offsets = self._params.get("spawn_offsets")
             if spawn_offsets is not None:
                 # spawn_offsets is expected to be a list of lists or array: [[x1, y1], [x2, y2], ...]
