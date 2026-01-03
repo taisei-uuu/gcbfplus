@@ -38,6 +38,7 @@ def make_env(
         obstacle_type: str = "rectangle",  # 追加
         obs_vel: float = 0.0,  # 追加
         virtual_leader: bool = False, # 追加
+        eval_mode: bool = False, # 追加
 ) -> MultiAgentEnv:
     assert env_id in ENV.keys(), f'Environment {env_id} not implemented.'
     params = ENV[env_id].PARAMS.copy()
@@ -76,6 +77,9 @@ def make_env(
 
     if virtual_leader:
         params["virtual_leader"] = True
+
+    if eval_mode:
+        params["eval_mode"] = True
 
     return ENV[env_id](
         num_agents=num_agents,
