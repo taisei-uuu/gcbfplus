@@ -64,7 +64,7 @@ class DoubleIntegrator(MultiAgentEnv):
         "apf_vortex_gain": 0.2,     # Strength of tangential (vortex) force
         "apf_obs_dist": 0.5,        # Sensing range for obstacles (meters)
         "apf_agent_dist": 0.3,      # Sensing range for other agents
-        "apf_max_adjustment": 1.0,  # Max offset adjustment magnitude (meters)
+        "apf_max_adjustment": 5.0,  # Max offset adjustment magnitude (meters)
         "virtual_leader": False,    # Virtual leader mode: Agent 0 ignores obstacles
         "eval_mode": False,  # Evaluation mode with scenario-based randomization
     }
