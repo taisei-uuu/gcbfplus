@@ -75,7 +75,8 @@ def test(args):
         spawn_offsets=spawn_offsets, # 追加
         obstacle_type=args.obstacle_type, # 追加
         virtual_leader=args.virtual_leader, # 追加
-        eval_mode=args.eval_mode # 追加
+        eval_mode=args.eval_mode, # 追加
+        apf_vortex_gain=args.apf_vortex_gain # 追加
     )
 
     if not args.u_ref:
@@ -343,6 +344,12 @@ def main():
         action="store_true",
         default=False,
         help="Enable evaluation mode with scenario-based randomization"
+    )
+    parser.add_argument(
+        "--apf-vortex-gain",
+        type=float,
+        default=None,
+        help="Override Vortex APF gain for comparison"
     )
 
     args = parser.parse_args()

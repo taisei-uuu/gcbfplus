@@ -39,6 +39,7 @@ def make_env(
         obs_vel: float = 0.0,  # 追加
         virtual_leader: bool = False, # 追加
         eval_mode: bool = False, # 追加
+        apf_vortex_gain: Optional[float] = None, # 追加
 ) -> MultiAgentEnv:
     assert env_id in ENV.keys(), f'Environment {env_id} not implemented.'
     params = ENV[env_id].PARAMS.copy()
@@ -80,6 +81,9 @@ def make_env(
 
     if eval_mode:
         params["eval_mode"] = True
+
+    if apf_vortex_gain is not None:
+        params["apf_vortex_gain"] = apf_vortex_gain
 
     return ENV[env_id](
         num_agents=num_agents,
